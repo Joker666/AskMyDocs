@@ -32,3 +32,31 @@
 ### Next
 
 - Keep Phase 2 and later integrations pointed at Ollama directly, using its Anthropic-compatible API for chat and native endpoints for embeddings.
+
+## 2026-03-17 02:05
+
+### Completed
+
+- Implemented Phase 2 document upload, list, and detail endpoints.
+- Added typed document response schemas and a document service layer for upload validation, checksum deduplication, and detail/list queries.
+- Stored uploads on disk using checksum-based filenames while preserving original filenames in the database.
+- Added API tests covering PDF validation, duplicate upload idempotency, list ordering, detail responses, and missing-document handling.
+
+### Files Changed
+
+- README.md
+- app/api/__init__.py
+- app/api/routes_documents.py
+- app/db/schemas.py
+- app/services/document_service.py
+- tests/
+- AGENTS_LOG.md
+
+### Notes
+
+- Duplicate uploads return the existing document with HTTP 200 and do not create additional files or rows.
+- `page_count` remains `null`, `chunk_count` remains `0`, and `latest_ingestion` remains `null` until later phases add parsing and ingestion.
+
+### Next
+
+- Implement Phase 3 parsing, chunking, and the real ingestion endpoint.

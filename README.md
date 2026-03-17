@@ -1,11 +1,12 @@
 # AskMyDocs
 
-Phase 1 provides the backend bootstrap for a local PDF question-answering system:
+Current backend capabilities:
 
 - FastAPI app entrypoint at `app.main:app`
 - PostgreSQL + pgvector bootstrap through raw SQL migrations
 - Ollama's Anthropic-compatible API for chat/tool-calling and Ollama native endpoints for embeddings
 - `GET /health` with app, DB, Anthropic-compat, and Ollama-native status fields
+- `POST /documents/upload`, `GET /documents`, and `GET /documents/{document_id}`
 
 ## Prerequisites
 
@@ -66,6 +67,33 @@ Expected response when the database is reachable:
 ```
 
 `ANTHROPIC_BASE_URL` and `OLLAMA_BASE_URL` both default to `http://localhost:11434` because they target different endpoint families exposed by the same local Ollama server.
+
+## Document Uploads
+
+Upload a PDF:
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents/upload \
+  -F "file=@/absolute/path/to/paper.pdf;type=application/pdf"
+```
+
+List uploaded documents:
+
+```bash
+curl http://127.0.0.1:8000/documents
+```
+
+Fetch document detail:
+
+```bash
+curl http://127.0.0.1:8000/documents/1
+```
+
+Notes:
+
+- Uploads are idempotent by checksum. Uploading the same PDF again returns the existing document.
+- Files are stored under `UPLOAD_DIR/<sha256>.pdf` while the original filename is preserved in the database.
+- `POST /documents/{document_id}/ingest` is intentionally deferred to Phase 3.
 
 ## Bootstrap Script
 
