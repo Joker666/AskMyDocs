@@ -1,4 +1,3 @@
-````md
 # AGENTS.md
 
 ## Project
@@ -13,7 +12,7 @@ Local document Q&A assistant over PDFs using:
 - Pydantic AI
 - Ollama
 
-The system ingests local PDF documents, extracts structured text, chunks and embeds them, stores vectors in Postgres, and answers user questions with grounded citations using a local LLM through Ollama (Anthropic compatible API).
+The system ingests local PDF documents, extracts structured text, chunks and embeds them, stores vectors in Postgres, and answers user questions with grounded citations using a chat model exposed through an Anthropic-compatible proxy backed by local Ollama.
 
 ---
 
@@ -42,11 +41,11 @@ This project should be easy to run locally and easy to extend later.
 4. Chunks and embeddings are stored in PostgreSQL with pgvector
 5. User asks a question
 6. Pydantic AI agent decides which retrieval tools to call
-7. Retrieved context is passed to local Ollama model
+7. Retrieved context is passed to the chat model through the Anthropic-compatible proxy
 8. API returns:
    - answer
    - supporting citations
-   - chunk references
+   - chunk references embedded in each citation object (`chunk_id`, document metadata, and quote)
 
 ---
 
@@ -72,7 +71,7 @@ Do not build these yet unless the core path is complete:
 
 ### Backend
 
-- Python 3.12+
+- Python 3.13+
 - FastAPI
 - Uvicorn
 - Pydantic v2
@@ -91,8 +90,9 @@ Do not build these yet unless the core path is complete:
 ### LLM + Embeddings
 
 - Ollama
-- Suggested chat model: `kimi-k2.5:cloud`
-- Suggested embedding model: `embeddinggemma`
+- Anthropic-compatible proxy for chat and tool-calling, backed by local Ollama
+- Suggested chat model behind the proxy: `kimi-k2.5:cloud`
+- Suggested embedding model in Ollama: `embeddinggemma`
 
 ### Dev Tooling
 
@@ -123,7 +123,6 @@ Docling PDF parser
   ↑
 Uploaded PDF files
 ```
-````
 
 ---
 
@@ -213,6 +212,13 @@ Fields:
 - created_at
 - updated_at
 
+Recommended `documents.status` values for MVP:
+
+- `uploaded`
+- `ingesting`
+- `ready`
+- `failed`
+
 ### document_chunks
 
 Stores parsed text chunks.
@@ -229,9 +235,11 @@ Fields:
 - metadata_json
 - embedding vector
 
-### ingestion_jobs (FastAPI BackgroundTasks)
+### ingestion_jobs
 
-Optional but useful, even for MVP.
+Required for MVP.
+
+Use `FastAPI BackgroundTasks` and persistent job state.
 
 Fields:
 
@@ -241,6 +249,13 @@ Fields:
 - error_message
 - started_at
 - completed_at
+
+Recommended `ingestion_jobs.status` values for MVP:
+
+- `pending`
+- `running`
+- `completed`
+- `failed`
 
 ---
 
@@ -277,9 +292,59 @@ Create:
 
 - `DocumentUploadResponse`
 - `DocumentListResponse`
+- `DocumentDetailResponse`
 - `IngestionStatusResponse`
 - `QueryRequest`
 - `QueryResponse`
+
+Use these exact payload shapes for MVP:
+
+```python
+class DocumentSummary(BaseModel):
+    id: int
+    filename: str
+    page_count: int | None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+class DocumentUploadResponse(BaseModel):
+    document: DocumentSummary
+
+class DocumentListResponse(BaseModel):
+    documents: list[DocumentSummary]
+
+class IngestionStatusResponse(BaseModel):
+    job_id: int
+    document_id: int
+    status: str
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    chunk_count: int
+
+class DocumentDetailResponse(BaseModel):
+    id: int
+    filename: str
+    file_path: str
+    checksum: str
+    page_count: int | None
+    status: str
+    chunk_count: int
+    created_at: datetime
+    updated_at: datetime
+    latest_ingestion: IngestionStatusResponse | None
+
+class QueryRequest(BaseModel):
+    question: str
+    document_ids: list[int] | None = None
+    top_k: int = Field(default=5, ge=1, le=20)
+
+class QueryResponse(BaseModel):
+    answer: str
+    citations: list[Citation]
+    confidence: float
+```
 
 ---
 
@@ -293,6 +358,7 @@ Returns:
 
 - app status
 - db connectivity
+- proxy connectivity
 - ollama connectivity
 
 ### Documents
@@ -301,6 +367,15 @@ Returns:
 - `GET /documents`
 - `GET /documents/{document_id}`
 - `POST /documents/{document_id}/ingest`
+
+For MVP, `POST /documents/upload` accepts a single PDF file per request. Uploading multiple files is supported by making repeated calls.
+
+Response contracts:
+
+- `POST /documents/upload` returns `DocumentUploadResponse`
+- `GET /documents` returns `DocumentListResponse`
+- `GET /documents/{document_id}` returns `DocumentDetailResponse`
+- `POST /documents/{document_id}/ingest` returns `IngestionStatusResponse`
 
 ### Query
 
@@ -335,6 +410,8 @@ Example response:
 }
 ```
 
+`POST /query` returns `QueryResponse`. `citations` are the only chunk references returned by the API for MVP.
+
 ---
 
 ## Tooling Contract for the Agent
@@ -358,7 +435,8 @@ Runs embedding search against pgvector.
 
 Returns:
 
-- chunk IDs
+- chunk ID
+- document ID
 - filename
 - page number
 - section title
@@ -368,6 +446,15 @@ Returns:
 ### 3. `fetch_chunk_context(chunk_ids: list[int])`
 
 Returns richer chunk text for a selected set of chunk IDs.
+
+Each returned item must include:
+
+- chunk ID
+- document ID
+- filename
+- page number
+- section title
+- full chunk text
 
 Use when:
 
@@ -394,7 +481,7 @@ The answering agent must follow these rules:
 4. Only cite retrieved chunks.
 5. If evidence is weak, say so.
 6. Do not fabricate page numbers, section titles, or quotes.
-7. If nothing relevant is found, return a graceful failure message and empty citations.
+7. If nothing relevant is found, return a graceful failure message, empty citations, and `confidence=0.0`.
 8. Final output must always validate against `AnswerResult`.
 
 ---
@@ -422,6 +509,7 @@ Build the ingestion flow in this order.
 - store original file under `data/uploads/`
 - compute checksum
 - create document row
+- create an `ingestion_jobs` row with status `pending` before starting parse work
 
 ### Step 2. Parse with Docling
 
@@ -450,7 +538,7 @@ Chunking rules:
 ### Step 5. Store in pgvector
 
 - insert chunk rows with embeddings
-- record ingestion status
+- update document and ingestion job status
 
 ---
 
@@ -484,14 +572,23 @@ POSTGRES_DB=askmydocs
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 
+ANTHROPIC_BASE_URL=http://localhost:8001
+ANTHROPIC_API_KEY=local-dev-token
+ANTHROPIC_MODEL_NAME=kimi-k2.5:cloud
+
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_CHAT_MODEL=kimi-k2.5:cloud
 OLLAMA_EMBED_MODEL=embeddinggemma
+EMBEDDING_DIMENSION=768
 
 UPLOAD_DIR=./data/uploads
 PARSED_DIR=./data/parsed
 LOG_LEVEL=INFO
 ```
+
+Notes:
+
+- Use `ANTHROPIC_BASE_URL` for the Pydantic AI chat model and tool-calling path.
+- Use `OLLAMA_BASE_URL` for embeddings and Ollama health checks.
 
 ---
 
@@ -556,6 +653,7 @@ Acceptance criteria:
 - uploaded PDF can be parsed
 - chunks are created with metadata
 - ingestion status is visible
+- `ingestion_jobs` is populated and updated correctly
 
 ### Phase 4: Embeddings and pgvector retrieval
 
@@ -577,7 +675,7 @@ Tasks:
 
 - define answer schema
 - create tools
-- wire Pydantic AI to Ollama-backed model
+- wire Pydantic AI to the Anthropic-compatible proxy backed by Ollama
 - implement `/query`
 
 Acceptance criteria:
@@ -695,19 +793,23 @@ Keep it simple and safe:
 ### pgvector
 
 - create vector extension via migration
-- define embedding column with fixed dimension once model dimension is known
+- require `EMBEDDING_DIMENSION` in config and use it consistently in the pgvector column definition and migrations
+- do not auto-detect or mutate vector dimensions at runtime
 
 ### Pydantic AI
 
 - use typed result model
 - expose retrieval operations as explicit tools
 - ensure the final answer is schema-validated
+- configure the model client against the Anthropic-compatible proxy, not Ollama's native chat API
 
 ### Ollama
 
 - add health check helper
 - separate chat client and embedding client
-- fail fast if the required models are missing
+- use Ollama directly for embeddings
+- treat the chat model as reachable through the Anthropic-compatible proxy
+- fail fast if the required proxy target or Ollama models are missing
 
 ---
 
