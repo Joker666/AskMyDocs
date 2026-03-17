@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from fastapi.testclient import TestClient
@@ -150,3 +151,33 @@ def test_health_anthropic_compat_failure(monkeypatch) -> None:
         }
     finally:
         app.dependency_overrides.clear()
+
+
+def test_health_failure_sanitizes_detail_and_logs(monkeypatch, caplog) -> None:
+    def fake_db_check(_settings) -> None:
+        raise RuntimeError("database unavailable\ntraceback details should be hidden")
+
+    def fake_anthropic_compat_check(_settings) -> None:
+        return None
+
+    def fake_ollama_native_check(_settings) -> None:
+        return None
+
+    monkeypatch.setattr("app.api.routes_health.check_database_connection", fake_db_check)
+    monkeypatch.setattr("app.api.routes_health.check_anthropic_compat", fake_anthropic_compat_check)
+    monkeypatch.setattr("app.api.routes_health.check_ollama_native", fake_ollama_native_check)
+    app.dependency_overrides[get_app_settings] = make_settings
+
+    client = TestClient(app)
+    try:
+        with caplog.at_level(logging.INFO):
+            response = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["db"]["detail"] == "database unavailable"
+    failure_logs = [record for record in caplog.records if record.msg == "health_check_failed"]
+    assert len(failure_logs) == 1
+    assert failure_logs[0].component == "db"
+    assert failure_logs[0].detail == "database unavailable"

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import httpx
 
 from app.config import Settings
+from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,6 @@ NATIVE_HEALTH_TIMEOUT_SECONDS = 5.0
 
 class OllamaNativeError(Exception):
     """Raised when Ollama native operations fail."""
-
-
-def _short_error(message: str) -> str:
-    return message.strip().splitlines()[0][:200]
-
-
 def _matching_model_name(configured_model: str, available_name: str) -> bool:
     configured = configured_model.strip()
     available = available_name.strip()
@@ -43,7 +38,7 @@ def _extract_error_message(response: httpx.Response) -> str | None:
     if isinstance(payload, dict):
         error = payload.get("error")
         if isinstance(error, str) and error.strip():
-            return _short_error(error)
+            return safe_error_detail(error, fallback="Ollama native request failed.")
     return None
 
 
@@ -79,7 +74,9 @@ def _request_json(
         with httpx.Client(base_url=settings.ollama_base_url, timeout=timeout) as client:
             response = client.request(method, path, json=payload)
     except httpx.HTTPError as exc:
-        raise OllamaNativeError(_short_error(str(exc) or "Ollama native request failed.")) from exc
+        raise OllamaNativeError(
+            safe_error_detail(exc, fallback="Ollama native request failed.")
+        ) from exc
 
     _raise_for_error_response(response, model_name=model_name or settings.ollama_embed_model)
 
@@ -136,11 +133,13 @@ def embed_texts(texts: Sequence[str], settings: Settings) -> list[list[float]]:
 
         embeddings.extend(validated_batch)
         logger.info(
-            "embedding_batch_completed model=%s batch=%s total_batches=%s size=%s",
-            settings.ollama_embed_model,
-            batch_index,
-            total_batches,
-            len(batch),
+            "embedding_batch_completed",
+            extra={
+                "model_name": settings.ollama_embed_model,
+                "batch_index": batch_index,
+                "total_batches": total_batches,
+                "batch_size": len(batch),
+            },
         )
 
     return embeddings

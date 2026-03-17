@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,9 @@ from app.db.schemas import (
     DocumentUploadResponse,
     IngestionStatusResponse,
 )
+from app.runtime import safe_error_detail
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentServiceError(Exception):
@@ -45,25 +49,31 @@ class UploadResult:
 class IngestionStartResult:
     document: Document
     job: IngestionJob
-
-
-def _short_error(message: str) -> str:
-    return message.strip()[:200]
-
-
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
 def validate_pdf_upload(*, filename: str | None, content_type: str | None, content: bytes) -> None:
     if not filename or not filename.lower().endswith(".pdf"):
-        raise InvalidPdfUploadError(_short_error("Only PDF files are supported."))
+        raise InvalidPdfUploadError(
+            safe_error_detail("Only PDF files are supported.", fallback="Invalid PDF upload.")
+        )
 
     if content_type != "application/pdf":
-        raise InvalidPdfUploadError(_short_error("Upload content type must be application/pdf."))
+        raise InvalidPdfUploadError(
+            safe_error_detail(
+                "Upload content type must be application/pdf.",
+                fallback="Invalid PDF upload.",
+            )
+        )
 
     if not content.startswith(b"%PDF-"):
-        raise InvalidPdfUploadError(_short_error("Uploaded file content is not a valid PDF."))
+        raise InvalidPdfUploadError(
+            safe_error_detail(
+                "Uploaded file content is not a valid PDF.",
+                fallback="Invalid PDF upload.",
+            )
+        )
 
 
 def compute_checksum(content: bytes) -> str:
@@ -121,11 +131,27 @@ def upload_document(
     content_type: str | None,
     content: bytes,
 ) -> UploadResult:
+    logger.info(
+        "document_upload_started",
+        extra={
+            "upload_filename": filename or "<missing>",
+            "content_type": content_type or "<missing>",
+            "size_bytes": len(content),
+        },
+    )
     validate_pdf_upload(filename=filename, content_type=content_type, content=content)
     checksum = compute_checksum(content)
 
     existing = session.exec(select(Document).where(Document.checksum == checksum)).first()
     if existing is not None:
+        logger.info(
+            "document_upload_completed",
+            extra={
+                "document_id": existing.id,
+                "was_created": False,
+                "checksum": checksum,
+            },
+        )
         return UploadResult(document=existing, created=False)
 
     storage_path = _storage_path(settings, checksum)
@@ -147,10 +173,26 @@ def upload_document(
         session.rollback()
         existing = session.exec(select(Document).where(Document.checksum == checksum)).first()
         if existing is not None:
+            logger.info(
+                "document_upload_completed",
+                extra={
+                    "document_id": existing.id,
+                    "was_created": False,
+                    "checksum": checksum,
+                },
+            )
             return UploadResult(document=existing, created=False)
         raise
 
     session.refresh(document)
+    logger.info(
+        "document_upload_completed",
+        extra={
+            "document_id": document.id,
+            "was_created": True,
+            "checksum": checksum,
+        },
+    )
     return UploadResult(document=document, created=True)
 
 
@@ -163,9 +205,16 @@ def list_documents(*, session: Session) -> DocumentListResponse:
 def get_document_detail(*, session: Session, document_id: int) -> DocumentDetailResponse:
     document = session.get(Document, document_id)
     if document is None or document.id is None:
-        raise DocumentNotFoundError(_short_error("Document not found."))
+        raise DocumentNotFoundError(
+            safe_error_detail("Document not found.", fallback="Document not found.")
+        )
     if document.created_at is None or document.updated_at is None:
-        raise DocumentServiceError(_short_error("Document timestamps are missing."))
+        raise DocumentServiceError(
+            safe_error_detail(
+                "Document timestamps are missing.",
+                fallback="Document metadata is incomplete.",
+            )
+        )
 
     return DocumentDetailResponse(
         id=document.id,
@@ -188,7 +237,9 @@ def document_upload_response(document: Document) -> DocumentUploadResponse:
 def get_document_record(*, session: Session, document_id: int) -> Document:
     document = session.get(Document, document_id)
     if document is None or document.id is None:
-        raise DocumentNotFoundError(_short_error("Document not found."))
+        raise DocumentNotFoundError(
+            safe_error_detail("Document not found.", fallback="Document not found.")
+        )
     return document
 
 
@@ -196,7 +247,12 @@ def start_document_ingestion(*, session: Session, document_id: int) -> Ingestion
     document = get_document_record(session=session, document_id=document_id)
 
     if not _source_path(document).exists():
-        raise DocumentIngestionConflictError(_short_error("Document source file is missing."))
+        raise DocumentIngestionConflictError(
+            safe_error_detail(
+                "Document source file is missing.",
+                fallback="Document source file is missing.",
+            )
+        )
 
     active_job = session.exec(
         select(IngestionJob)
@@ -206,7 +262,10 @@ def start_document_ingestion(*, session: Session, document_id: int) -> Ingestion
     ).first()
     if active_job is not None:
         raise DocumentIngestionConflictError(
-            _short_error("Document ingestion is already in progress.")
+            safe_error_detail(
+                "Document ingestion is already in progress.",
+                fallback="Document ingestion is already in progress.",
+            )
         )
 
     job = IngestionJob(
@@ -222,6 +281,14 @@ def start_document_ingestion(*, session: Session, document_id: int) -> Ingestion
     session.commit()
     session.refresh(job)
     session.refresh(document)
+    logger.info(
+        "ingestion_requested",
+        extra={
+            "document_id": document.id,
+            "job_id": job.id,
+            "document_status": document.status,
+        },
+    )
     return IngestionStartResult(document=document, job=job)
 
 
@@ -231,7 +298,12 @@ def ingestion_status_response(
     chunk_count: int = 0,
 ) -> IngestionStatusResponse:
     if job.id is None:
-        raise DocumentServiceError(_short_error("Ingestion job is missing an identifier."))
+        raise DocumentServiceError(
+            safe_error_detail(
+                "Ingestion job is missing an identifier.",
+                fallback="Ingestion job is missing an identifier.",
+            )
+        )
 
     return IngestionStatusResponse(
         job_id=job.id,

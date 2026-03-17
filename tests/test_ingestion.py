@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, delete, select
 
 from app.config import Settings
@@ -437,11 +439,14 @@ def test_ingest_rejects_missing_source_file(document_test_environment) -> None:
 def test_ingest_failure_marks_job_and_document_failed(
     document_test_environment,
     monkeypatch,
+    caplog,
 ) -> None:
     client, settings, engine = document_test_environment
 
     def fake_parse_document(*, document_id: int, filename: str, source_path: str | Path):
-        raise DocumentParseError("Docling parsing failed because the test forced an error.")
+        raise DocumentParseError(
+            "Docling parsing failed because the test forced an error.\ntraceback line"
+        )
 
     monkeypatch.setattr("app.ingestion.pipeline.parse_document", fake_parse_document)
 
@@ -451,7 +456,8 @@ def test_ingest_failure_marks_job_and_document_failed(
     )
     document_id = upload.json()["document"]["id"]
 
-    response = client.post(f"/documents/{document_id}/ingest")
+    with caplog.at_level(logging.INFO):
+        response = client.post(f"/documents/{document_id}/ingest")
 
     assert response.status_code == 202
 
@@ -462,6 +468,9 @@ def test_ingest_failure_marks_job_and_document_failed(
     assert body["chunk_count"] == 0
     assert body["latest_ingestion"]["status"] == "failed"
     assert len(body["latest_ingestion"]["error_message"]) <= 200
+    assert body["latest_ingestion"]["error_message"] == (
+        "Docling parsing failed because the test forced an error."
+    )
 
     artifact_path = Path(settings.parsed_dir) / f"{document_id}.json"
     assert not artifact_path.exists()
@@ -471,6 +480,45 @@ def test_ingest_failure_marks_job_and_document_failed(
             select(DocumentChunk).where(DocumentChunk.document_id == document_id)
         ).all()
         assert chunks == []
+    failure_logs = [record for record in caplog.records if record.msg == "ingestion_failed"]
+    assert len(failure_logs) == 1
+    assert failure_logs[0].document_id == document_id
+
+
+def test_ingest_logs_started_and_completed(document_test_environment, caplog) -> None:
+    client, _, _ = document_test_environment
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("logging.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(f"/documents/{document_id}/ingest")
+
+    assert response.status_code == 202
+    events = [record.msg for record in caplog.records]
+    assert "ingestion_requested" in events
+    assert "ingestion_started" in events
+    assert "ingestion_completed" in events
+
+
+def test_ingest_route_returns_503_for_start_failure(document_test_environment, monkeypatch) -> None:
+    client, _, _ = document_test_environment
+
+    def failing_start_document_ingestion(*, session, document_id: int):
+        raise SQLAlchemyError("database write failed\ninternal details")
+
+    monkeypatch.setattr(
+        "app.api.routes_documents.start_document_ingestion",
+        failing_start_document_ingestion,
+    )
+
+    response = client.post("/documents/1/ingest")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "database write failed"}
 
 
 def test_ingest_embedding_failure_marks_job_and_document_failed(

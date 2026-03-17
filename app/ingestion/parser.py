@@ -7,6 +7,8 @@ from docling.document_converter import DocumentConverter
 from docling_core.types.doc.document import SectionHeaderItem, TextItem
 from pydantic import BaseModel, Field
 
+from app.runtime import safe_error_detail
+
 
 class ParsedBlock(BaseModel):
     text: str
@@ -28,12 +30,6 @@ class ParsedDocument(BaseModel):
 
 class DocumentParseError(Exception):
     """Raised when a document cannot be parsed into the internal representation."""
-
-
-def _short_error(message: str) -> str:
-    return message.strip().splitlines()[0][:200]
-
-
 def parse_document(*, document_id: int, filename: str, source_path: str | Path) -> ParsedDocument:
     path = Path(source_path)
     if not path.exists():
@@ -42,12 +38,17 @@ def parse_document(*, document_id: int, filename: str, source_path: str | Path) 
     try:
         result = DocumentConverter().convert(path, raises_on_error=True)
     except Exception as exc:  # pragma: no cover - exercised via integration and monkeypatch paths
-        raise DocumentParseError(_short_error(str(exc) or "Docling parsing failed.")) from exc
+        raise DocumentParseError(
+            safe_error_detail(exc, fallback="Docling parsing failed.")
+        ) from exc
 
     if result.status != ConversionStatus.SUCCESS:
         message = "Docling parsing failed."
         if result.errors:
-            message = _short_error(result.errors[0].error_message)
+            message = safe_error_detail(
+                result.errors[0].error_message,
+                fallback="Docling parsing failed.",
+            )
         raise DocumentParseError(message)
 
     parsed = _normalize_docling_document(

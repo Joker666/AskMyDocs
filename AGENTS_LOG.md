@@ -224,3 +224,86 @@
 ### Next
 
 - Move into Phase 6 for broader polish, docs refinement, and any additional operational hardening.
+
+## 2026-03-17 12:12
+
+### Completed
+
+- Added Phase 6 structured logging with stable event names and key/value output formatting.
+- Centralized short safe runtime error sanitization and applied it across health checks, query failures, Docling parsing, Ollama embedding calls, and ingestion failure handling.
+- Hardened query and ingestion entrypoints so dependency failures return sanitized `5xx` responses instead of leaking raw exception content.
+
+### Files Changed
+
+- app/logging.py
+- app/runtime.py
+- app/api/routes_health.py
+- app/api/routes_documents.py
+- app/api/routes_query.py
+- app/services/document_service.py
+- app/services/query_service.py
+- app/agent/agent.py
+- app/agent/tools.py
+- app/ingestion/parser.py
+- app/ingestion/embedder.py
+- app/ingestion/pipeline.py
+- app/retrieval/search.py
+
+### Notes
+
+- Log payloads now avoid full document text and full user questions, using counts and lengths instead.
+- Ingestion failures preserve the last good ready index when re-ingest embedding work fails, while still recording a failed job.
+
+### Next
+
+- Finish the Phase 6 operator scripts, refresh README instructions, and add targeted observability/failure tests.
+
+## 2026-03-17 12:14
+
+### Completed
+
+- Expanded the local operator scripts for Phase 6.
+- Added optional end-to-end query support and non-zero failure exits to `scripts/ingest_sample.py`.
+- Implemented `scripts/reset_db.py` with explicit confirmation and optional artifact deletion.
+- Improved `scripts/bootstrap.sh` prerequisite checks and operator guidance.
+- Rewrote the README to document bootstrap, health, upload, ingest, query, reset, and troubleshooting flows.
+
+### Files Changed
+
+- scripts/bootstrap.sh
+- scripts/ingest_sample.py
+- scripts/reset_db.py
+- README.md
+
+### Notes
+
+- The reset script truncates app tables without altering migration state.
+- The ingest sample script remains suitable for local demos because it polls the existing REST API instead of importing app internals.
+
+### Next
+
+- Add targeted Phase 6 tests for sanitized failures, log events, and script behavior, then run the full verification suite.
+
+## 2026-03-17 12:18
+
+### Completed
+
+- Added Phase 6 regression coverage for sanitized health/query/ingestion failures, structured log events, and helper script behavior.
+- Verified the final Phase 6 implementation with `uv run pytest`, `uv run ruff check .`, and `uv run pyright`.
+
+### Files Changed
+
+- tests/test_health.py
+- tests/test_ingestion.py
+- tests/test_query.py
+- tests/test_scripts.py
+- AGENTS_LOG.md
+
+### Notes
+
+- Verification is green with 55 passing tests.
+- The remaining test output warnings come from upstream `docling` and `pydantic_ai` deprecations rather than project code failures.
+
+### Next
+
+- Phase 6 is complete; the next major work should start only if you want to move beyond the MVP scope.

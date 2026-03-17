@@ -10,6 +10,7 @@ from app.db.schemas import QueryRequest, QueryResponse
 from app.dependencies import get_app_settings, get_db_session
 from app.services.query_service import (
     QueryAgentError,
+    QueryDependencyError,
     QueryDocumentConflictError,
     QueryDocumentNotFoundError,
     query_documents,
@@ -35,3 +36,8 @@ def query_route(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except QueryAgentError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except QueryDependencyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc

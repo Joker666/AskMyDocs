@@ -64,7 +64,7 @@ class DocumentMetadataResult(BaseModel):
 def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
     @agent.tool
     def list_documents(ctx: RunContext[QueryAgentDeps]) -> list[ListedDocument]:
-        logger.info("agent_tool_called name=list_documents")
+        logger.info("agent_tool_called", extra={"tool_name": "list_documents"})
         statement = select(Document).order_by(desc(Document.created_at), desc(Document.id))
         documents = ctx.deps.session.exec(statement).all()
         return [
@@ -96,9 +96,13 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
 
         effective_top_k = max(1, min(top_k, 20))
         logger.info(
-            "agent_tool_called name=search_chunks documents=%s top_k=%s",
-            len(scoped_document_ids),
-            effective_top_k,
+            "agent_tool_called",
+            extra={
+                "tool_name": "search_chunks",
+                "document_count": len(scoped_document_ids),
+                "top_k": effective_top_k,
+                "query_length": len(query),
+            },
         )
         results = run_search_chunks(
             session=ctx.deps.session,
@@ -127,7 +131,10 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         ctx: RunContext[QueryAgentDeps],
         chunk_ids: list[int],
     ) -> list[ChunkContextResult]:
-        logger.info("agent_tool_called name=fetch_chunk_context requested=%s", len(chunk_ids))
+        logger.info(
+            "agent_tool_called",
+            extra={"tool_name": "fetch_chunk_context", "requested_chunk_count": len(chunk_ids)},
+        )
         allowed_chunk_ids = [
             chunk_id
             for chunk_id in chunk_ids
@@ -160,7 +167,10 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         ctx: RunContext[QueryAgentDeps],
         document_id: int,
     ) -> DocumentMetadataResult:
-        logger.info("agent_tool_called name=get_document_metadata document_id=%s", document_id)
+        logger.info(
+            "agent_tool_called",
+            extra={"tool_name": "get_document_metadata", "document_id": document_id},
+        )
         document = ctx.deps.session.get(Document, document_id)
         if document is None or document.id is None:
             raise ValueError("Document not found.")

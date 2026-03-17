@@ -13,6 +13,7 @@ from app.agent.models import AnswerResult, Citation
 from app.agent.prompts import QUERY_SYSTEM_PROMPT
 from app.agent.tools import ChunkContextResult, QueryAgentDeps, register_query_tools
 from app.config import Settings
+from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,6 @@ MAX_CITATION_QUOTE_LENGTH = 300
 
 class AnthropicCompatError(Exception):
     """Raised when Anthropic-compatible connectivity checks fail."""
-
-
-def _short_error(message: str) -> str:
-    return message.strip().splitlines()[0][:200]
-
-
 def _normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
 
@@ -132,5 +127,5 @@ def check_anthropic_compat(settings: Settings) -> None:
         )
     except Exception as exc:
         raise AnthropicCompatError(
-            _short_error(str(exc) or "Anthropic-compatible request failed.")
+            safe_error_detail(exc, fallback="Anthropic-compatible request failed.")
         ) from exc

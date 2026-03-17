@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,6 +22,7 @@ from app.db.models import Document, DocumentChunk, IngestionJob
 from app.db.schemas import QueryRequest
 from app.db.session import get_engine
 from app.dependencies import get_app_settings, get_db_session
+from app.ingestion.embedder import OllamaNativeError
 from app.main import app
 from app.retrieval.search import SearchResult
 from app.services.query_service import QueryAgentError, run_query_agent
@@ -382,118 +384,171 @@ def test_query_returns_502_when_agent_fails(query_test_environment, monkeypatch)
     assert response.json() == {"detail": "agent failed"}
 
 
+def test_query_returns_503_for_retrieval_dependency_failure(
+    query_test_environment,
+    monkeypatch,
+    caplog,
+) -> None:
+    client, _, _ = query_test_environment
+    document_id = _upload_and_ingest(client)
+
+    def failing_search_chunks(**_kwargs) -> list[SearchResult]:
+        raise OllamaNativeError("embedding backend unavailable\nextra context should not leak")
+
+    monkeypatch.setattr("app.services.query_service.search_chunks", failing_search_chunks)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/query",
+            json={"question": "Trigger dependency failure", "document_ids": [document_id]},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "embedding backend unavailable"}
+    failure_logs = [record for record in caplog.records if record.msg == "query_failed"]
+    assert any(record.stage == "retrieval" for record in failure_logs)
+
+
+def test_query_logs_lifecycle_events(query_test_environment, monkeypatch, caplog) -> None:
+    client, _, _ = query_test_environment
+    document_id = _upload_and_ingest(client)
+
+    def fake_search_chunks(**_kwargs) -> list[SearchResult]:
+        return []
+
+    monkeypatch.setattr("app.services.query_service.search_chunks", fake_search_chunks)
+
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/query",
+            json={"question": "No evidence?", "document_ids": [document_id], "top_k": 5},
+        )
+
+    assert response.status_code == 200
+    events = [record.msg for record in caplog.records]
+    assert "query_started" in events
+    assert "query_completed" in events
+
+
 def test_query_agent_uses_tools_and_returns_grounded_citations(
     query_test_environment,
     monkeypatch,
+    caplog,
 ) -> None:
     _, settings, engine = query_test_environment
 
-    with Session(engine) as session:
-        document = Document(
-            filename="agent.pdf",
-            file_path="./data/uploads/agent.pdf",
-            checksum="agent-checksum",
-            page_count=1,
-            status="ready",
-        )
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        assert document.id is not None
+    with caplog.at_level(logging.INFO):
+        with Session(engine) as session:
+            document = Document(
+                filename="agent.pdf",
+                file_path="./data/uploads/agent.pdf",
+                checksum="agent-checksum",
+                page_count=1,
+                status="ready",
+            )
+            session.add(document)
+            session.commit()
+            session.refresh(document)
+            assert document.id is not None
 
-        chunk = DocumentChunk(
-            document_id=document.id,
-            chunk_index=0,
-            page_number=1,
-            section_title="Overview",
-            text="The query pipeline must stay grounded in fetched chunk context.",
-            token_estimate=12,
-            metadata_json={},
-            embedding=_embedding_for_text("agent-question", settings.embedding_dimension),
-        )
-        session.add(chunk)
-        session.commit()
-        session.refresh(chunk)
-        assert chunk.id is not None
-        assert chunk.embedding is not None
-        chunk_embedding = list(chunk.embedding)
+            chunk = DocumentChunk(
+                document_id=document.id,
+                chunk_index=0,
+                page_number=1,
+                section_title="Overview",
+                text="The query pipeline must stay grounded in fetched chunk context.",
+                token_estimate=12,
+                metadata_json={},
+                embedding=_embedding_for_text("agent-question", settings.embedding_dimension),
+            )
+            session.add(chunk)
+            session.commit()
+            session.refresh(chunk)
+            assert chunk.id is not None
+            assert chunk.embedding is not None
+            chunk_embedding = list(chunk.embedding)
 
-        def fake_query_embed(_texts: list[str], _settings: Settings) -> list[list[float]]:
-            return [chunk_embedding]
+            def fake_query_embed(_texts: list[str], _settings: Settings) -> list[list[float]]:
+                return [chunk_embedding]
 
-        monkeypatch.setattr("app.retrieval.search.embed_texts", fake_query_embed)
+            monkeypatch.setattr("app.retrieval.search.embed_texts", fake_query_embed)
 
-        def function_model(messages, info: AgentInfo) -> ModelResponse:
-            last_request = messages[-1]
-            assert isinstance(last_request, ModelRequest)
-            tool_returns = [
-                part for part in last_request.parts if isinstance(part, ToolReturnPart)
-            ]
-            if not tool_returns:
+            def function_model(messages, info: AgentInfo) -> ModelResponse:
+                last_request = messages[-1]
+                assert isinstance(last_request, ModelRequest)
+                tool_returns = [
+                    part for part in last_request.parts if isinstance(part, ToolReturnPart)
+                ]
+                if not tool_returns:
+                    return ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                "search_chunks",
+                                {
+                                    "query": "agent-question",
+                                    "document_ids": [document.id],
+                                    "top_k": 5,
+                                },
+                            )
+                        ]
+                    )
+
+                last_tool_return = tool_returns[-1]
+                if last_tool_return.tool_name == "search_chunks":
+                    content = last_tool_return.content
+                    assert isinstance(content, list)
+                    chunk_id = content[0].chunk_id
+                    return ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                "fetch_chunk_context",
+                                {"chunk_ids": [chunk_id]},
+                            )
+                        ]
+                    )
+
+                output_tool_name = info.output_tools[0].name
                 return ModelResponse(
                     parts=[
                         ToolCallPart(
-                            "search_chunks",
+                            output_tool_name,
                             {
-                                "query": "agent-question",
-                                "document_ids": [document.id],
-                                "top_k": 5,
+                                "answer": "The pipeline stays grounded in fetched chunk context.",
+                                "citations": [
+                                    {
+                                        "document_id": document.id,
+                                        "chunk_id": chunk.id,
+                                        "filename": "agent.pdf",
+                                        "page_number": 1,
+                                        "section_title": "Overview",
+                                        "quote": "must stay grounded in fetched chunk context",
+                                    }
+                                ],
+                                "confidence": 0.88,
                             },
                         )
                     ]
                 )
 
-            last_tool_return = tool_returns[-1]
-            if last_tool_return.tool_name == "search_chunks":
-                content = last_tool_return.content
-                assert isinstance(content, list)
-                chunk_id = content[0].chunk_id
-                return ModelResponse(
-                    parts=[
-                        ToolCallPart(
-                            "fetch_chunk_context",
-                            {"chunk_ids": [chunk_id]},
-                        )
-                    ]
-                )
-
-            output_tool_name = info.output_tools[0].name
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        output_tool_name,
-                        {
-                            "answer": "The pipeline stays grounded in fetched chunk context.",
-                            "citations": [
-                                {
-                                    "document_id": document.id,
-                                    "chunk_id": chunk.id,
-                                    "filename": "agent.pdf",
-                                    "page_number": 1,
-                                    "section_title": "Overview",
-                                    "quote": "must stay grounded in fetched chunk context",
-                                }
-                            ],
-                            "confidence": 0.88,
-                        },
-                    )
-                ]
+            model = FunctionModel(function=function_model)
+            agent = build_query_agent(settings, model=model)
+            deps = QueryAgentDeps(
+                session=session,
+                settings=settings,
+                document_ids=[document.id],
+                top_k=5,
             )
 
-        model = FunctionModel(function=function_model)
-        agent = build_query_agent(settings, model=model)
-        deps = QueryAgentDeps(
-            session=session,
-            settings=settings,
-            document_ids=[document.id],
-            top_k=5,
-        )
-
-        result = agent.run_sync("agent-question", deps=deps)
+            result = agent.run_sync("agent-question", deps=deps)
 
     assert result.output.answer == "The pipeline stays grounded in fetched chunk context."
     assert chunk.id in deps.search_results_by_id
     assert chunk.id in deps.fetched_chunks_by_id
+    tool_logs = [record for record in caplog.records if record.msg == "agent_tool_called"]
+    assert [record.tool_name for record in tool_logs] == [
+        "search_chunks",
+        "fetch_chunk_context",
+    ]
 
 
 def test_run_query_agent_rejects_invalid_citations(query_test_environment, monkeypatch) -> None:
@@ -590,6 +645,9 @@ def test_query_integration_returns_citations_when_chat_available(
             top_k=5,
         ).model_dump(),
     )
+
+    if response.status_code in {502, 503}:
+        pytest.skip(f"Ollama live query was unavailable for integration test: {response.json()}")
 
     assert response.status_code == 200
     assert response.json()["citations"]

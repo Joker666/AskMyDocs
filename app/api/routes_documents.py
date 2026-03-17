@@ -12,6 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
 from app.config import Settings
@@ -23,9 +24,11 @@ from app.db.schemas import (
 )
 from app.dependencies import get_app_settings, get_db_session
 from app.ingestion.pipeline import run_ingestion_job
+from app.runtime import safe_error_detail
 from app.services.document_service import (
     DocumentIngestionConflictError,
     DocumentNotFoundError,
+    DocumentServiceError,
     InvalidPdfUploadError,
     document_upload_response,
     get_document_detail,
@@ -102,6 +105,12 @@ def ingest_document_route(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DocumentIngestionConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except DocumentServiceError as exc:
+        detail = safe_error_detail(exc, fallback="Failed to start ingestion job.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail) from exc
+    except SQLAlchemyError as exc:
+        detail = safe_error_detail(exc, fallback="Failed to start ingestion job.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail) from exc
 
     job_id = result.job.id
     if job_id is None:

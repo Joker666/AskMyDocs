@@ -13,6 +13,7 @@ from app.db.session import get_engine
 from app.ingestion.chunker import chunk_document
 from app.ingestion.embedder import embed_texts
 from app.ingestion.parser import ParsedDocument, parse_document
+from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,6 @@ class IngestionPipelineError(Exception):
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-def _short_error(message: str) -> str:
-    return message.strip().splitlines()[0][:200]
-
-
 def _artifact_path(settings: Settings, document_id: int) -> Path:
     return Path(settings.parsed_dir) / f"{document_id}.json"
 
@@ -59,6 +54,14 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
             document.updated_at = _utcnow()
             document_filename = document.filename
             document_file_path = document.file_path
+            logger.info(
+                "ingestion_started",
+                extra={
+                    "document_id": document_id,
+                    "job_id": job_id,
+                    "preserve_existing_index": preserve_existing_index,
+                },
+            )
             session.add(document)
             session.add(job)
             session.commit()
@@ -117,10 +120,13 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
 
         artifact_temp_path.replace(artifact_path)
         logger.info(
-            "ingestion_completed document_id=%s job_id=%s chunks=%s",
-            document_id,
-            job_id,
-            len(chunks),
+            "ingestion_completed",
+            extra={
+                "document_id": document_id,
+                "job_id": job_id,
+                "chunk_count": len(chunks),
+                "page_count": parsed_document.page_count,
+            },
         )
     except Exception as exc:
         if artifact_temp_path.exists():
@@ -173,7 +179,10 @@ def _mark_ingestion_failed(
 ) -> None:
     engine = get_engine(settings)
     message = error.args[0] if error.args else str(error)
-    short_message = _short_error(message or error.__class__.__name__)
+    short_message = safe_error_detail(
+        message or error.__class__.__name__,
+        fallback="Document ingestion failed.",
+    )
 
     with Session(engine) as session:
         document = session.get(Document, document_id)
@@ -195,8 +204,11 @@ def _mark_ingestion_failed(
         session.commit()
 
     logger.warning(
-        "ingestion_failed document_id=%s job_id=%s error=%s",
-        document_id,
-        job_id,
-        short_message,
+        "ingestion_failed",
+        extra={
+            "document_id": document_id,
+            "job_id": job_id,
+            "error_detail": short_message,
+            "preserve_ready_document": preserve_ready_document,
+        },
     )

@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from pydantic_ai import AgentRunError, ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models import Model
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from app.agent.agent import build_query_agent
@@ -13,7 +14,9 @@ from app.agent.tools import QueryAgentDeps
 from app.config import Settings
 from app.db.models import Document
 from app.db.schemas import QueryRequest, QueryResponse
+from app.ingestion.embedder import OllamaNativeError
 from app.retrieval.search import search_chunks
+from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +40,8 @@ class QueryAgentError(QueryServiceError):
     """Raised when the query agent cannot return a valid response."""
 
 
-def _short_error(message: str) -> str:
-    return message.strip().splitlines()[0][:200]
+class QueryDependencyError(QueryServiceError):
+    """Raised when a live dependency fails during querying."""
 
 
 def query_documents(
@@ -48,26 +51,44 @@ def query_documents(
     request: QueryRequest,
     model_override: Model | None = None,
 ) -> QueryResponse:
-    document_ids = _resolve_queryable_document_ids(
-        session=session,
-        requested_document_ids=request.document_ids,
-    )
+    try:
+        document_ids = _resolve_queryable_document_ids(
+            session=session,
+            requested_document_ids=request.document_ids,
+        )
+    except SQLAlchemyError as exc:
+        detail = safe_error_detail(exc, fallback="Query document lookup failed.")
+        logger.warning("query_failed", extra={"stage": "document_lookup", "detail": detail})
+        raise QueryDependencyError(detail) from exc
     logger.info(
-        "query_started documents=%s top_k=%s question_length=%s",
-        len(document_ids),
-        request.top_k,
-        len(request.question),
+        "query_started",
+        extra={
+            "document_count": len(document_ids),
+            "top_k": request.top_k,
+            "question_length": len(request.question),
+        },
     )
 
-    retrieval_results = search_chunks(
-        session=session,
-        settings=settings,
-        query=request.question,
-        document_ids=document_ids,
-        top_k=request.top_k,
-    )
+    try:
+        retrieval_results = search_chunks(
+            session=session,
+            settings=settings,
+            query=request.question,
+            document_ids=document_ids,
+            top_k=request.top_k,
+        )
+    except (OllamaNativeError, SQLAlchemyError) as exc:
+        detail = safe_error_detail(exc, fallback="Query retrieval failed.")
+        logger.warning(
+            "query_failed",
+            extra={"stage": "retrieval", "detail": detail, "document_count": len(document_ids)},
+        )
+        raise QueryDependencyError(detail) from exc
     if not retrieval_results:
-        logger.info("query_completed documents=%s result=no_hits", len(document_ids))
+        logger.info(
+            "query_completed",
+            extra={"document_count": len(document_ids), "result": "no_hits"},
+        )
         return QueryResponse(
             answer=NO_RELEVANT_CHUNKS_ANSWER,
             citations=[],
@@ -83,10 +104,12 @@ def query_documents(
         model_override=model_override,
     )
     logger.info(
-        "query_completed documents=%s citations=%s confidence=%s",
-        len(document_ids),
-        len(answer.citations),
-        answer.confidence,
+        "query_completed",
+        extra={
+            "document_count": len(document_ids),
+            "citation_count": len(answer.citations),
+            "confidence": answer.confidence,
+        },
     )
     return QueryResponse(
         answer=answer.answer,
@@ -113,12 +136,23 @@ def run_query_agent(
     )
     try:
         result = agent.run_sync(question, deps=deps)
+    except (OllamaNativeError, SQLAlchemyError) as exc:
+        detail = safe_error_detail(exc, fallback="Query agent dependencies failed.")
+        logger.warning("query_failed", extra={"stage": "agent_dependencies", "detail": detail})
+        raise QueryDependencyError(detail) from exc
     except (ModelHTTPError, ModelAPIError, UnexpectedModelBehavior, AgentRunError) as exc:
+        detail = safe_error_detail(
+            exc,
+            fallback="Query agent failed to produce a valid grounded answer.",
+        )
+        logger.warning("query_failed", extra={"stage": "agent", "detail": detail})
         raise QueryAgentError(
-            _short_error(str(exc) or "Query agent failed to produce a valid grounded answer.")
+            detail
         ) from exc
     except Exception as exc:
-        raise QueryAgentError(_short_error(str(exc) or "Query agent request failed.")) from exc
+        detail = safe_error_detail(exc, fallback="Query agent request failed.")
+        logger.warning("query_failed", extra={"stage": "agent", "detail": detail})
+        raise QueryAgentError(detail) from exc
 
     output = result.output
     if not isinstance(output, AnswerResult):

@@ -1,69 +1,80 @@
 # AskMyDocs
 
-Current backend capabilities:
+AskMyDocs is a local PDF Q&A backend built with FastAPI, Docling, PostgreSQL + pgvector, Pydantic AI, and Ollama. The current MVP supports upload, ingestion, embedding-backed retrieval, grounded answering, and citation validation.
 
-- FastAPI app entrypoint at `app.main:app`
-- PostgreSQL + pgvector bootstrap through raw SQL migrations
-- Ollama's Anthropic-compatible API for chat/tool-calling and Ollama native endpoints for embeddings
-- Embedding-backed chunk storage and internal exact cosine retrieval over pgvector
-- `POST /query` with grounded answers, validated citations, and typed responses
-- `GET /health` with app, DB, Anthropic-compat, and Ollama-native status fields
-- `POST /documents/upload`, `GET /documents`, and `GET /documents/{document_id}`
+## What It Does
+
+- Upload a single PDF per request.
+- Parse and normalize document structure with Docling.
+- Chunk and embed document text into PostgreSQL + pgvector.
+- Query ready documents through a Pydantic AI agent using tool calls.
+- Return typed answers with citation objects tied to real stored chunks.
+- Report app, database, chat-model, and embedding-model health through `/health`.
 
 ## Prerequisites
 
 - Python 3.13+
 - `uv`
-- Docker
+- Docker with `docker compose`
+- Ollama running locally
 
-## Quick Start
+Required Ollama models:
 
-1. Copy the example environment file:
+- Embeddings: `embeddinggemma`
+- Chat/tool-calling: the model named by `ANTHROPIC_MODEL_NAME` (defaults to `kimi-k2.5:cloud`)
 
-   ```bash
-   cp .env.example .env
-   ```
+## Bootstrap
 
-2. Install dependencies:
+Fastest local setup:
 
-   ```bash
-   uv sync --extra dev
-   ```
+```bash
+./scripts/bootstrap.sh
+```
 
-3. Start PostgreSQL with pgvector:
+The bootstrap script:
 
-   ```bash
-   docker compose up -d postgres
-   ```
+- checks that `uv`, Docker, and `docker compose` are available
+- creates `.env` from `.env.example` when needed
+- installs dependencies with `uv sync --extra dev`
+- starts PostgreSQL with pgvector through Docker Compose
+- applies the raw SQL migrations
 
-4. Apply migrations:
+Manual setup is equivalent:
 
-   ```bash
-   uv run python scripts/migrate.py
-   ```
+```bash
+cp .env.example .env
+uv sync --extra dev
+docker compose up -d postgres
+uv run python scripts/migrate.py
+```
 
-5. Ensure Ollama is running and the required models are available:
+## Environment
 
-   ```bash
-   ollama pull embeddinggemma
-   ```
+Both chat and embedding endpoints default to the same local Ollama host:
 
-   The configured chat model in `ANTHROPIC_MODEL_NAME` must also be reachable through Ollama's
-   Anthropic-compatible API for `/query` and the `anthropic_compat` health check.
+- `ANTHROPIC_BASE_URL=http://localhost:11434`
+- `OLLAMA_BASE_URL=http://localhost:11434`
 
-6. Run the API:
+They target different endpoint families:
 
-   ```bash
-   uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-   ```
+- `ANTHROPIC_BASE_URL` is for Ollama's Anthropic-compatible chat/tool-calling API
+- `OLLAMA_BASE_URL` is for Ollama native endpoints such as `/api/embed` and `/api/tags`
 
-7. Check health:
+## Run The API
 
-   ```bash
-   curl http://127.0.0.1:8000/health
-   ```
+Start the server:
 
-Expected response when the database is reachable and both configured Ollama models are available:
+```bash
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Check health:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected healthy response:
 
 ```json
 {
@@ -77,62 +88,54 @@ Expected response when the database is reachable and both configured Ollama mode
 }
 ```
 
-`ANTHROPIC_BASE_URL` and `OLLAMA_BASE_URL` both default to `http://localhost:11434` because they target different endpoint families exposed by the same local Ollama server.
-If Ollama is down, the configured embed model is missing, or the configured chat model is
-unavailable, `/health` returns `503` with the relevant component set to `status = "error"`.
+If PostgreSQL is down, the configured embed model is missing, or the configured chat model is unavailable, `/health` returns `503` with a short sanitized detail per failing component.
 
-## Document Uploads
+## End-To-End Flow
 
-Upload a PDF:
+### 1. Upload
 
 ```bash
 curl -X POST http://127.0.0.1:8000/documents/upload \
   -F "file=@/absolute/path/to/paper.pdf;type=application/pdf"
 ```
 
-List uploaded documents:
+Useful notes:
+
+- Uploads are idempotent by checksum.
+- Stored files use `UPLOAD_DIR/<sha256>.pdf`.
+- The original filename is preserved in the database and API responses.
+
+List documents:
 
 ```bash
 curl http://127.0.0.1:8000/documents
 ```
 
-Fetch document detail:
+Get document detail:
 
 ```bash
 curl http://127.0.0.1:8000/documents/1
 ```
 
-Notes:
-
-- Uploads are idempotent by checksum. Uploading the same PDF again returns the existing document.
-- Files are stored under `UPLOAD_DIR/<sha256>.pdf` while the original filename is preserved in the database.
-
-## Ingestion
-
-Trigger asynchronous parsing and chunking for an uploaded document:
+### 2. Ingest
 
 ```bash
 curl -X POST http://127.0.0.1:8000/documents/1/ingest
 ```
 
-The endpoint returns `202 Accepted` with a pending ingestion job. Poll `GET /documents/1` to observe:
+The route returns `202 Accepted` with an ingestion job. Poll document detail to track progress:
 
-- `status` moving through `uploaded` -> `ingesting` -> `ready` or `failed`
-- `latest_ingestion.status` moving through `pending` -> `running` -> `completed` or `failed`
-- `chunk_count` becoming non-zero once chunk storage and embedding finish
+- `document.status`: `uploaded` -> `ingesting` -> `ready` or `failed`
+- `latest_ingestion.status`: `pending` -> `running` -> `completed` or `failed`
+- `chunk_count`: non-zero once chunks and embeddings are stored
 
-After a successful ingest, the normalized parsed artifact is written to:
+Successful ingest also writes a normalized parsed artifact to:
 
 ```text
 PARSED_DIR/<document_id>.json
 ```
 
-Successful ingestion now stores embeddings directly on `document_chunks.embedding`, which powers the
-internal exact cosine retrieval layer used by later phases.
-
-## Query
-
-Ask a question across one or more ready documents:
+### 3. Query
 
 ```bash
 curl -X POST http://127.0.0.1:8000/query \
@@ -144,27 +147,48 @@ curl -X POST http://127.0.0.1:8000/query \
   }'
 ```
 
-Notes:
+Behavior notes:
 
-- `/query` rejects missing requested documents with `404`.
-- `/query` rejects requested documents that are not `ready` with `409`.
-- If retrieval finds no relevant chunks, the API returns a graceful answer with empty citations and
-  `confidence: 0.0`.
+- Missing requested document IDs return `404`.
+- Requested documents that are not `ready` return `409`.
+- Retrieval no-hit responses return a normal `200` with empty citations and `confidence: 0.0`.
+- Dependency failures during live retrieval return sanitized `5xx` responses instead of raw stack traces.
 
-## Bootstrap Script
+## Helper Scripts
 
-You can run the same local setup with:
+### Demo ingest script
+
+Upload, ingest, poll, and optionally query in one step:
 
 ```bash
-./scripts/bootstrap.sh
+uv run python scripts/ingest_sample.py /absolute/path/to/paper.pdf
+uv run python scripts/ingest_sample.py /absolute/path/to/paper.pdf \
+  --question "What are the main findings?"
 ```
 
-The script will:
+The script exits non-zero if the PDF is missing or if ingestion finishes in a failed state.
 
-- create `.env` from `.env.example` if needed
-- install dependencies with `uv`
-- start Docker Compose PostgreSQL
-- apply raw SQL migrations
+### Reset local data
+
+Reset the app tables:
+
+```bash
+uv run python scripts/reset_db.py --yes
+```
+
+Reset the app tables and remove upload/parsed artifacts:
+
+```bash
+uv run python scripts/reset_db.py --yes --delete-artifacts
+```
+
+This truncates:
+
+- `documents`
+- `document_chunks`
+- `ingestion_jobs`
+
+It does not remove migrations or change schema state.
 
 ## Development Checks
 
@@ -175,3 +199,24 @@ uv run pytest
 uv run ruff check .
 uv run pyright
 ```
+
+## Troubleshooting
+
+- `GET /health` shows `db=error`
+  - Confirm `docker compose ps postgres` shows the container running.
+  - Re-run `uv run python scripts/migrate.py` after PostgreSQL starts.
+
+- `GET /health` shows `ollama_native=error`
+  - Confirm Ollama is running locally.
+  - Run `ollama pull embeddinggemma`.
+  - Verify `OLLAMA_EMBED_MODEL` matches an installed Ollama model name.
+
+- `GET /health` shows `anthropic_compat=error`
+  - Confirm the configured `ANTHROPIC_MODEL_NAME` is available through Ollama.
+  - Verify `ANTHROPIC_BASE_URL` points at the local Ollama server.
+
+- `/query` returns `409`
+  - The requested document is not ready yet. Re-check `GET /documents/{id}` and wait for ingestion to complete.
+
+- `/query` returns `200` with empty citations
+  - Retrieval found no relevant indexed chunks for that question and document scope.
