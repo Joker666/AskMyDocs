@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, cast
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
@@ -12,6 +11,7 @@ from app.agent.models import AnswerResult
 from app.config import Settings
 from app.db.models import Document, DocumentChunk
 from app.observability import get_langfuse_client
+from app.retrieval.context_builder import build_chunk_context
 from app.retrieval.search import SearchResult
 from app.retrieval.search import search_chunks as run_search_chunks
 
@@ -184,23 +184,17 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
             chunk_ids=allowed_chunk_ids,
             document_ids=ctx.deps.document_ids,
         )
-        records_by_id = {record.chunk_id: record for record in records}
-        ordered_records = [
-            records_by_id[chunk_id]
-            for chunk_id in allowed_chunk_ids
-            if chunk_id in records_by_id
-        ]
         ctx.deps.fetched_chunks_by_id = {
-            record.chunk_id: record for record in ordered_records
+            record.chunk_id: record for record in records
         }
         if client is not None:
             client.update_current_span(
                 output={
-                    "chunk_count": len(ordered_records),
-                    "chunk_ids": [record.chunk_id for record in ordered_records],
+                    "chunk_count": len(records),
+                    "chunk_ids": [record.chunk_id for record in records],
                 }
             )
-        return ordered_records
+        return records
 
     @agent.tool
     def get_document_metadata(
@@ -262,32 +256,19 @@ def _load_chunk_context(
     chunk_ids: list[int],
     document_ids: list[int],
 ) -> list[ChunkContextResult]:
-    chunk_id_column = cast(Any, DocumentChunk.id)
-    document_id_column = cast(Any, DocumentChunk.document_id)
-    columns: tuple[Any, ...] = (
-        chunk_id_column,
-        document_id_column,
-        cast(Any, Document.filename),
-        cast(Any, DocumentChunk.page_number),
-        cast(Any, DocumentChunk.section_title),
-        cast(Any, DocumentChunk.text),
+    rows = build_chunk_context(
+        session=session,
+        chunk_ids=chunk_ids,
+        document_ids=document_ids,
     )
-    statement = (
-        select(*columns)
-        .join(Document, Document.id == DocumentChunk.document_id)
-        .where(chunk_id_column.in_(chunk_ids))
-        .where(document_id_column.in_(document_ids))
-    )
-    rows = session.exec(statement).all()
     return [
         ChunkContextResult(
-            chunk_id=chunk_id,
-            document_id=document_id,
-            filename=filename,
-            page_number=page_number,
-            section_title=section_title,
-            text=text,
+            chunk_id=row.chunk_id,
+            document_id=row.document_id,
+            filename=row.filename,
+            page_number=row.page_number,
+            section_title=row.section_title,
+            text=row.text,
         )
-        for chunk_id, document_id, filename, page_number, section_title, text in rows
-        if chunk_id is not None
+        for row in rows
     ]

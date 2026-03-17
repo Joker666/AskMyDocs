@@ -365,3 +365,27 @@
 ### Next
 
 - If you later want to narrow this again, add an explicit config gate around `include_content` and the masking policy.
+
+## 2026-03-17 13:33
+
+### Completed
+
+- Implemented `app/retrieval/context_builder.py` to expand selected hits into a local same-document chunk window.
+- Wired `fetch_chunk_context` to return adjacent chunks around retrieved hits instead of only the exact matched chunks.
+- Added unit coverage for context-window expansion, overlap deduplication, and document-boundary isolation.
+
+### Files Changed
+
+- app/retrieval/context_builder.py
+- app/agent/tools.py
+- tests/test_context_builder.py
+- AGENTS_LOG.md
+
+### Notes
+
+- The first pass uses a simple `[-1, +1]` chunk window per selected hit and preserves stable local ordering.
+- This improves local context assembly after retrieval, but it does not yet change vector ranking, increase retrieval recall, or add reranking.
+
+### Next
+
+- The next retrieval improvement should be higher internal recall before answer generation, then reranking over the larger candidate set.
