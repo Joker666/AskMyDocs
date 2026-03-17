@@ -12,7 +12,7 @@ Local document Q&A assistant over PDFs using:
 - Pydantic AI
 - Ollama
 
-The system ingests local PDF documents, extracts structured text, chunks and embeds them, stores vectors in Postgres, and answers user questions with grounded citations using a chat model exposed through an Anthropic-compatible proxy backed by local Ollama.
+The system ingests local PDF documents, extracts structured text, chunks and embeds them, stores vectors in Postgres, and answers user questions with grounded citations using Ollama's Anthropic-compatible API for chat and Ollama's native API for embeddings.
 
 ---
 
@@ -41,7 +41,7 @@ This project should be easy to run locally and easy to extend later.
 4. Chunks and embeddings are stored in PostgreSQL with pgvector
 5. User asks a question
 6. Pydantic AI agent decides which retrieval tools to call
-7. Retrieved context is passed to the chat model through the Anthropic-compatible proxy
+7. Retrieved context is passed to the chat model through Ollama's Anthropic-compatible API
 8. API returns:
    - answer
    - supporting citations
@@ -90,8 +90,8 @@ Do not build these yet unless the core path is complete:
 ### LLM + Embeddings
 
 - Ollama
-- Anthropic-compatible proxy for chat and tool-calling, backed by local Ollama
-- Suggested chat model behind the proxy: `kimi-k2.5:cloud`
+- Ollama Anthropic-compatible API for chat and tool-calling
+- Suggested chat model exposed by Ollama: `kimi-k2.5:cloud`
 - Suggested embedding model in Ollama: `embeddinggemma`
 
 ### Dev Tooling
@@ -358,8 +358,8 @@ Returns:
 
 - app status
 - db connectivity
-- proxy connectivity
-- ollama connectivity
+- Anthropic-compatible Ollama connectivity
+- Ollama native API connectivity
 
 ### Documents
 
@@ -572,8 +572,8 @@ POSTGRES_DB=askmydocs
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 
-ANTHROPIC_BASE_URL=http://localhost:8001
-ANTHROPIC_API_KEY=local-dev-token
+ANTHROPIC_BASE_URL=http://localhost:11434
+ANTHROPIC_AUTH_TOKEN=ollama
 ANTHROPIC_MODEL_NAME=kimi-k2.5:cloud
 
 OLLAMA_BASE_URL=http://localhost:11434
@@ -587,8 +587,9 @@ LOG_LEVEL=INFO
 
 Notes:
 
-- Use `ANTHROPIC_BASE_URL` for the Pydantic AI chat model and tool-calling path.
-- Use `OLLAMA_BASE_URL` for embeddings and Ollama health checks.
+- Use `ANTHROPIC_BASE_URL` for Ollama's Anthropic-compatible chat and tool-calling path.
+- Use `OLLAMA_BASE_URL` for Ollama native endpoints such as embeddings.
+- Both URLs may point to the same Ollama host in local development.
 
 ---
 
@@ -675,7 +676,7 @@ Tasks:
 
 - define answer schema
 - create tools
-- wire Pydantic AI to the Anthropic-compatible proxy backed by Ollama
+- wire Pydantic AI to Ollama's Anthropic-compatible API
 - implement `/query`
 
 Acceptance criteria:
@@ -801,15 +802,15 @@ Keep it simple and safe:
 - use typed result model
 - expose retrieval operations as explicit tools
 - ensure the final answer is schema-validated
-- configure the model client against the Anthropic-compatible proxy, not Ollama's native chat API
+- configure the model client against Ollama's Anthropic-compatible API
 
 ### Ollama
 
 - add health check helper
 - separate chat client and embedding client
 - use Ollama directly for embeddings
-- treat the chat model as reachable through the Anthropic-compatible proxy
-- fail fast if the required proxy target or Ollama models are missing
+- treat the chat model as reachable through Ollama's Anthropic-compatible API
+- fail fast if the required Ollama-compatible chat or embedding endpoints are unavailable
 
 ---
 

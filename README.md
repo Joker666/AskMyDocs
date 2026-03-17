@@ -4,7 +4,8 @@ Phase 1 provides the backend bootstrap for a local PDF question-answering system
 
 - FastAPI app entrypoint at `app.main:app`
 - PostgreSQL + pgvector bootstrap through raw SQL migrations
-- `GET /health` with app, DB, proxy, and Ollama status fields
+- Ollama's Anthropic-compatible API for chat/tool-calling and Ollama native endpoints for embeddings
+- `GET /health` with app, DB, Anthropic-compat, and Ollama-native status fields
 
 ## Prerequisites
 
@@ -58,11 +59,13 @@ Expected response when the database is reachable:
   "checks": {
     "app": {"status": "ok", "detail": null},
     "db": {"status": "ok", "detail": null},
-    "proxy": {"status": "not_checked", "detail": null},
-    "ollama": {"status": "not_checked", "detail": null}
+    "anthropic_compat": {"status": "not_checked", "detail": null},
+    "ollama_native": {"status": "not_checked", "detail": null}
   }
 }
 ```
+
+`ANTHROPIC_BASE_URL` and `OLLAMA_BASE_URL` both default to `http://localhost:11434` because they target different endpoint families exposed by the same local Ollama server.
 
 ## Bootstrap Script
 

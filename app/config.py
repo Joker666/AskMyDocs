@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, cast
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_EMBEDDING_DIMENSION = 768
@@ -27,10 +27,11 @@ class Settings(BaseSettings):
     postgres_user: str = Field(alias="POSTGRES_USER")
     postgres_password: SecretStr = Field(alias="POSTGRES_PASSWORD")
 
-    anthropic_base_url: str = Field(default="http://localhost:8001", alias="ANTHROPIC_BASE_URL")
-    anthropic_api_key: SecretStr = Field(
-        default=SecretStr("local-dev-token"),
-        alias="ANTHROPIC_API_KEY",
+    anthropic_base_url: str = Field(default="http://localhost:11434", alias="ANTHROPIC_BASE_URL")
+    anthropic_auth_token: SecretStr = Field(
+        default=SecretStr("ollama"),
+        alias="ANTHROPIC_AUTH_TOKEN",
+        validation_alias=AliasChoices("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"),
     )
     anthropic_model_name: str = Field(default="kimi-k2.5:cloud", alias="ANTHROPIC_MODEL_NAME")
 

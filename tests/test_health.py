@@ -37,8 +37,8 @@ def test_health_success(monkeypatch) -> None:
             "checks": {
                 "app": {"status": "ok", "detail": None},
                 "db": {"status": "ok", "detail": None},
-                "proxy": {"status": "not_checked", "detail": None},
-                "ollama": {"status": "not_checked", "detail": None},
+                "anthropic_compat": {"status": "not_checked", "detail": None},
+                "ollama_native": {"status": "not_checked", "detail": None},
             },
         }
     finally:
@@ -62,8 +62,8 @@ def test_health_db_failure(monkeypatch) -> None:
             "checks": {
                 "app": {"status": "ok", "detail": None},
                 "db": {"status": "error", "detail": "database unavailable"},
-                "proxy": {"status": "not_checked", "detail": None},
-                "ollama": {"status": "not_checked", "detail": None},
+                "anthropic_compat": {"status": "not_checked", "detail": None},
+                "ollama_native": {"status": "not_checked", "detail": None},
             },
         }
     finally:

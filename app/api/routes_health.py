@@ -21,8 +21,8 @@ class ComponentCheck(BaseModel):
 class HealthChecks(BaseModel):
     app: ComponentCheck
     db: ComponentCheck
-    proxy: ComponentCheck
-    ollama: ComponentCheck
+    anthropic_compat: ComponentCheck
+    ollama_native: ComponentCheck
 
 
 class HealthResponse(BaseModel):
@@ -41,8 +41,8 @@ def healthcheck(
     settings: SettingsDependency,
 ) -> HealthResponse:
     app_check = ComponentCheck(status="ok")
-    proxy_check = ComponentCheck(status="not_checked")
-    ollama_check = ComponentCheck(status="not_checked")
+    anthropic_compat_check = ComponentCheck(status="not_checked")
+    ollama_native_check = ComponentCheck(status="not_checked")
 
     try:
         check_database_connection(settings)
@@ -59,7 +59,7 @@ def healthcheck(
         checks=HealthChecks(
             app=app_check,
             db=db_check,
-            proxy=proxy_check,
-            ollama=ollama_check,
+            anthropic_compat=anthropic_compat_check,
+            ollama_native=ollama_native_check,
         ),
     )
