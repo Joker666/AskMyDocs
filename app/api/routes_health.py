@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel
 
+from app.agent.agent import check_anthropic_compat
 from app.config import Settings
 from app.db.session import check_database_connection
 from app.dependencies import get_app_settings
@@ -42,7 +43,6 @@ def healthcheck(
     settings: SettingsDependency,
 ) -> HealthResponse:
     app_check = ComponentCheck(status="ok")
-    anthropic_compat_check = ComponentCheck(status="not_checked")
     overall_status = "ok"
 
     try:
@@ -50,6 +50,16 @@ def healthcheck(
         db_check = ComponentCheck(status="ok")
     except Exception as exc:
         db_check = ComponentCheck(status="error", detail=_sanitize_error_message(exc))
+        overall_status = "degraded"
+
+    try:
+        check_anthropic_compat(settings)
+        anthropic_compat_check = ComponentCheck(status="ok")
+    except Exception as exc:
+        anthropic_compat_check = ComponentCheck(
+            status="error",
+            detail=_sanitize_error_message(exc),
+        )
         overall_status = "degraded"
 
     try:

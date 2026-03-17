@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.models import Citation
+
 
 class DocumentSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -51,3 +53,9 @@ class QueryRequest(BaseModel):
     question: str
     document_ids: list[int] | None = None
     top_k: int = Field(default=5, ge=1, le=20)
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    citations: list[Citation]
+    confidence: float

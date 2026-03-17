@@ -6,6 +6,7 @@ Current backend capabilities:
 - PostgreSQL + pgvector bootstrap through raw SQL migrations
 - Ollama's Anthropic-compatible API for chat/tool-calling and Ollama native endpoints for embeddings
 - Embedding-backed chunk storage and internal exact cosine retrieval over pgvector
+- `POST /query` with grounded answers, validated citations, and typed responses
 - `GET /health` with app, DB, Anthropic-compat, and Ollama-native status fields
 - `POST /documents/upload`, `GET /documents`, and `GET /documents/{document_id}`
 
@@ -41,11 +42,14 @@ Current backend capabilities:
    uv run python scripts/migrate.py
    ```
 
-5. Ensure Ollama is running and the embedding model is available:
+5. Ensure Ollama is running and the required models are available:
 
    ```bash
    ollama pull embeddinggemma
    ```
+
+   The configured chat model in `ANTHROPIC_MODEL_NAME` must also be reachable through Ollama's
+   Anthropic-compatible API for `/query` and the `anthropic_compat` health check.
 
 6. Run the API:
 
@@ -59,8 +63,7 @@ Current backend capabilities:
    curl http://127.0.0.1:8000/health
    ```
 
-Expected response when the database is reachable and the configured Ollama embedding model is
-available:
+Expected response when the database is reachable and both configured Ollama models are available:
 
 ```json
 {
@@ -68,15 +71,15 @@ available:
   "checks": {
     "app": {"status": "ok", "detail": null},
     "db": {"status": "ok", "detail": null},
-    "anthropic_compat": {"status": "not_checked", "detail": null},
+    "anthropic_compat": {"status": "ok", "detail": null},
     "ollama_native": {"status": "ok", "detail": null}
   }
 }
 ```
 
 `ANTHROPIC_BASE_URL` and `OLLAMA_BASE_URL` both default to `http://localhost:11434` because they target different endpoint families exposed by the same local Ollama server.
-If Ollama is down or `OLLAMA_EMBED_MODEL` is missing, `/health` returns `503` with
-`checks.ollama_native.status = "error"`.
+If Ollama is down, the configured embed model is missing, or the configured chat model is
+unavailable, `/health` returns `503` with the relevant component set to `status = "error"`.
 
 ## Document Uploads
 
@@ -126,6 +129,27 @@ PARSED_DIR/<document_id>.json
 
 Successful ingestion now stores embeddings directly on `document_chunks.embedding`, which powers the
 internal exact cosine retrieval layer used by later phases.
+
+## Query
+
+Ask a question across one or more ready documents:
+
+```bash
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What should the agent avoid fabricating?",
+    "document_ids": [1],
+    "top_k": 5
+  }'
+```
+
+Notes:
+
+- `/query` rejects missing requested documents with `404`.
+- `/query` rejects requested documents that are not `ready` with `409`.
+- If retrieval finds no relevant chunks, the API returns a graceful answer with empty citations and
+  `confidence: 0.0`.
 
 ## Bootstrap Script
 

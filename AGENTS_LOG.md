@@ -190,3 +190,37 @@
 ### Next
 
 - Start Phase 5 by defining the typed agent output schema and wiring retrieval into the Pydantic AI query flow.
+
+## 2026-03-17 11:53
+
+### Completed
+
+- Implemented the Phase 5 Pydantic AI query path with typed `Citation` and `AnswerResult` models, retrieval tools, citation validation, and the `/query` endpoint.
+- Wired Ollama's Anthropic-compatible API into the answering agent and activated the `anthropic_compat` health check.
+- Added query route/service tests, agent schema tests, tool-flow coverage with `FunctionModel`, and an optional live query integration test.
+- Verified `uv run pytest`, `./.venv/bin/ruff check .`, and `uv run pyright` all pass.
+
+### Files Changed
+
+- README.md
+- app/agent/
+- app/api/__init__.py
+- app/api/routes_health.py
+- app/api/routes_query.py
+- app/db/schemas.py
+- app/dependencies.py
+- app/services/query_service.py
+- tests/test_agent_schema.py
+- tests/test_health.py
+- tests/test_query.py
+- AGENTS_LOG.md
+
+### Notes
+
+- `/query` validates requested document IDs strictly: missing documents return `404`, and non-ready documents return `409`.
+- The service performs retrieval before invoking the chat model and skips the model entirely when retrieval returns no hits.
+- Final citations are enforced through a Pydantic AI output validator that only accepts fetched chunk context from the current run.
+
+### Next
+
+- Move into Phase 6 for broader polish, docs refinement, and any additional operational hardening.
