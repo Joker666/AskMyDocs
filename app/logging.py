@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 
@@ -78,7 +79,7 @@ def configure_logging(settings: Settings) -> None:
     handler.setFormatter(KeyValueFormatter())
     root_logger.addHandler(handler)
 
-    if settings.logfire_is_configured:
+    if settings.logfire_is_configured and not os.environ.get("PYTEST_CURRENT_TEST"):
         logfire.configure(
             send_to_logfire=True,
             token=settings.logfire_token.get_secret_value() if settings.logfire_token else None,
@@ -97,5 +98,5 @@ def configure_logging(settings: Settings) -> None:
 
 
 def shutdown_logging(settings: Settings) -> None:
-    if settings.logfire_is_configured:
+    if settings.logfire_is_configured and not os.environ.get("PYTEST_CURRENT_TEST"):
         logfire.shutdown()

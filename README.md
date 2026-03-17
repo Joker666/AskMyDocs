@@ -98,7 +98,11 @@ Test runs do not initialize Langfuse, which keeps `pytest` quiet and avoids expo
 
 ## Logfire Logging
 
-AskMyDocs also forwards standard-library `logging` output to Logfire using the official [`LogfireLoggingHandler`](https://logfire.pydantic.dev/docs/integrations/logging/).
+AskMyDocs also sends observability data to Logfire for:
+
+- standard-library logging via the official [`LogfireLoggingHandler`](https://logfire.pydantic.dev/docs/integrations/logging/)
+- FastAPI request instrumentation
+- Pydantic AI agent instrumentation
 
 Set these environment variables to enable log shipping:
 
@@ -116,6 +120,9 @@ Behavior notes:
 - Logfire export is only enabled when `LOGFIRE_TOKEN` is set.
 - `LOGFIRE_ENVIRONMENT` falls back to `APP_ENV` when omitted.
 - The app disables Logfire's own console output so local logs are not duplicated.
+- FastAPI instrumentation also records request-level attributes and attaches `X-Session-ID` and `X-User-ID` when present.
+- Langfuse tracing remains enabled independently; both systems run side by side when configured.
+- Pytest runs do not initialize Logfire exports, which avoids sending local test traffic to the dashboard.
 
 ## Run The API
 

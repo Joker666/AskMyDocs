@@ -12,6 +12,7 @@ from app.logging import KeyValueFormatter, configure_logging
 def make_settings(**overrides: Any) -> Settings:
     settings_cls = cast(Any, Settings)
     return settings_cls(
+        _env_file=None,
         POSTGRES_HOST="localhost",
         POSTGRES_DB="askmydocs",
         POSTGRES_USER="postgres",
@@ -41,6 +42,7 @@ def test_configure_logging_keeps_console_handler_without_logfire() -> None:
 
 
 def test_configure_logging_adds_logfire_handler_when_token_present(monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     settings = make_settings(
         LOGFIRE_TOKEN=SecretStr("lf-write-token"),
         LOGFIRE_SERVICE_VERSION="0.1.0",
@@ -81,7 +83,7 @@ def test_configure_logging_adds_logfire_handler_when_token_present(monkeypatch) 
             "service_version": "0.1.0",
             "environment": "test",
             "console": False,
-            "min_level": "INFO",
+            "min_level": logging.INFO,
         }
         assert len(handler_calls) == 1
         assert handler_calls[0]["level"] == logging.INFO

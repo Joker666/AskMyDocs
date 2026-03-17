@@ -11,6 +11,7 @@ from app.config import Settings
 def make_settings() -> Settings:
     settings_cls = cast(Any, Settings)
     return settings_cls(
+        _env_file=None,
         POSTGRES_HOST="localhost",
         POSTGRES_DB="askmydocs",
         POSTGRES_USER="postgres",
@@ -42,6 +43,7 @@ def test_logfire_requires_token_to_export() -> None:
 
     settings_cls = cast(Any, Settings)
     configured = settings_cls(
+        _env_file=None,
         POSTGRES_HOST="localhost",
         POSTGRES_DB="askmydocs",
         POSTGRES_USER="postgres",

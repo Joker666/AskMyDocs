@@ -11,6 +11,7 @@ from app.logging import configure_logging, shutdown_logging
 from app.observability import (
     get_langfuse_client,
     initialize_observability,
+    instrument_fastapi_observability,
     propagate_request_trace_attributes,
     request_trace_input,
     response_trace_output,
@@ -25,10 +26,11 @@ def ensure_runtime_dirs(settings: Settings) -> None:
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(application: FastAPI):
     settings = get_settings()
     configure_logging(settings)
     ensure_runtime_dirs(settings)
+    instrument_fastapi_observability(settings, application)
     initialize_observability(settings)
     try:
         yield

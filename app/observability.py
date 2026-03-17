@@ -5,8 +5,10 @@ import logging
 import os
 from contextlib import nullcontext
 from typing import Any, Literal
+from weakref import WeakSet
 
-from fastapi import Request
+import logfire
+from fastapi import FastAPI, Request, WebSocket
 from langfuse import Langfuse, get_client, propagate_attributes
 from pydantic_ai import InstrumentationSettings
 
@@ -15,6 +17,8 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 _INITIALIZED_PUBLIC_KEYS: set[str] = set()
 _PYTEST_DISABLED_LOGGED = False
+_LOGFIRE_PYDANTIC_AI_INSTRUMENTED = False
+_LOGFIRE_FASTAPI_APPS: WeakSet[FastAPI] = WeakSet()
 
 ObservationType = Literal[
     "span",
@@ -36,6 +40,8 @@ USER_ID_HEADER = "x-user-id"
 
 
 def initialize_observability(settings: Settings) -> None:
+    initialize_logfire_observability(settings)
+
     global _PYTEST_DISABLED_LOGGED
     if os.environ.get("PYTEST_CURRENT_TEST"):
         if not _PYTEST_DISABLED_LOGGED:
@@ -91,6 +97,46 @@ def shutdown_observability(settings: Settings) -> None:
     public_key = public_key_secret.get_secret_value()
     get_client(public_key=public_key).shutdown()
     _INITIALIZED_PUBLIC_KEYS.discard(public_key)
+
+
+def initialize_logfire_observability(settings: Settings) -> None:
+    global _LOGFIRE_PYDANTIC_AI_INSTRUMENTED
+
+    if not _logfire_runtime_enabled(settings) or _LOGFIRE_PYDANTIC_AI_INSTRUMENTED:
+        return
+
+    logfire.instrument_pydantic_ai(
+        include_content=True,
+        include_binary_content=False,
+    )
+    _LOGFIRE_PYDANTIC_AI_INSTRUMENTED = True
+    logger.info(
+        "logfire_pydantic_ai_enabled",
+        extra={
+            "environment": settings.logfire_runtime_environment,
+            "service_name": settings.logfire_service_name,
+        },
+    )
+
+
+def instrument_fastapi_observability(settings: Settings, app: FastAPI) -> None:
+    if not _logfire_runtime_enabled(settings) or app in _LOGFIRE_FASTAPI_APPS:
+        return
+
+    logfire.instrument_fastapi(
+        app,
+        capture_headers=False,
+        request_attributes_mapper=_logfire_request_attributes_mapper,
+        record_send_receive=False,
+    )
+    _LOGFIRE_FASTAPI_APPS.add(app)
+    logger.info(
+        "logfire_fastapi_enabled",
+        extra={
+            "environment": settings.logfire_runtime_environment,
+            "service_name": settings.logfire_service_name,
+        },
+    )
 
 
 def build_pydantic_ai_instrumentation(
@@ -201,7 +247,7 @@ def safe_json(value: Any) -> str:
         return str(value)
 
 
-def _header_value(request: Request, header_name: str) -> str | None:
+def _header_value(request: Request | WebSocket, header_name: str) -> str | None:
     value = request.headers.get(header_name)
     if value is None:
         return None
@@ -214,6 +260,31 @@ def _route_tag(path: str) -> str:
     if not segments:
         return "root"
     return segments[0][:50]
+
+
+def _logfire_request_attributes_mapper(
+    request: Request | WebSocket,
+    attributes: dict[str, Any],
+) -> dict[str, Any]:
+    mapped = dict(attributes)
+    path = request.url.path or "/"
+
+    mapped["http.path"] = path
+    mapped["askmydocs.route_tag"] = _route_tag(path)
+
+    session_id = _header_value(request, SESSION_ID_HEADER)
+    if session_id is not None:
+        mapped["request.session_id"] = session_id
+
+    user_id = _header_value(request, USER_ID_HEADER)
+    if user_id is not None:
+        mapped["request.user_id"] = user_id
+
+    return mapped
+
+
+def _logfire_runtime_enabled(settings: Settings) -> bool:
+    return settings.logfire_is_configured and not os.environ.get("PYTEST_CURRENT_TEST")
 
 
 def _mask_trace_data(*, data: Any, **_: dict[str, Any]) -> Any:

@@ -417,3 +417,33 @@
 ### Next
 
 - Set `LOGFIRE_TOKEN` in the runtime environment and verify new app logs appear in the target Logfire project dashboard.
+
+## 2026-03-17 14:19
+
+### Completed
+
+- Added Logfire instrumentation for FastAPI requests and Pydantic AI agent runs while keeping the existing Langfuse tracing middleware active.
+- Updated the project dependency to `logfire[fastapi]`, regenerated `uv.lock`, and synced the environment to install the OpenTelemetry FastAPI instrumentation packages.
+- Added focused observability tests and disabled Logfire exports during pytest runs to avoid sending test traffic.
+
+### Files Changed
+
+- app/main.py
+- app/observability.py
+- app/logging.py
+- pyproject.toml
+- uv.lock
+- README.md
+- tests/test_config.py
+- tests/test_logging.py
+- tests/test_observability.py
+- AGENTS_LOG.md
+
+### Notes
+
+- FastAPI instrumentation adds Logfire request spans with request metadata and optional session/user identifiers from `X-Session-ID` and `X-User-ID`.
+- Pydantic AI instrumentation is initialized once per process and runs alongside the existing Langfuse `instrument` settings.
+
+### Next
+
+- Restart the API with `LOGFIRE_TOKEN` set and verify FastAPI requests, agent runs, and logs are all visible in the Logfire dashboard for the expected service/environment.
