@@ -10,13 +10,13 @@ from sqlmodel import Session, select
 
 from app.agent.agent import build_query_agent
 from app.agent.models import AnswerResult
-from app.agent.tools import QueryAgentDeps
+from app.agent.tools import ChunkContextResult, QueryAgentDeps, load_chunk_context
 from app.config import Settings
 from app.db.models import Document
 from app.db.schemas import QueryRequest, QueryResponse
 from app.ingestion.embedder import OllamaNativeError
 from app.observability import preview_text, start_observation
-from app.retrieval.search import search_chunks
+from app.retrieval.search import SearchResult, search_chunks
 from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,7 @@ def query_documents(
                 question=request.question,
                 document_ids=document_ids,
                 top_k=request.top_k,
+                retrieval_results=retrieval_results,
                 model_override=model_override,
             )
             logger.info(
@@ -170,6 +171,7 @@ def run_query_agent(
     question: str,
     document_ids: list[int],
     top_k: int,
+    retrieval_results: list[SearchResult] | None = None,
     model_override: Model | None = None,
 ) -> AnswerResult:
     with start_observation(
@@ -184,11 +186,18 @@ def run_query_agent(
         metadata={"component": "pydantic_ai"},
     ) as span:
         agent = build_query_agent(settings, model=model_override)
+        search_results_by_id, fetched_chunks_by_id = _preseed_deps(
+            session=session,
+            document_ids=document_ids,
+            retrieval_results=retrieval_results or [],
+        )
         deps = QueryAgentDeps(
             session=session,
             settings=settings,
             document_ids=document_ids,
             top_k=top_k,
+            search_results_by_id=search_results_by_id,
+            fetched_chunks_by_id=fetched_chunks_by_id,
         )
         try:
             result = agent.run_sync(question, deps=deps)
@@ -264,3 +273,29 @@ def _resolve_queryable_document_ids(
         raise QueryDocumentConflictError(NO_QUERYABLE_DOCUMENTS_MESSAGE)
 
     return ready_document_ids
+
+
+def _preseed_deps(
+    *,
+    session: Session,
+    document_ids: list[int],
+    retrieval_results: list[SearchResult],
+) -> tuple[dict[int, SearchResult], dict[int, ChunkContextResult]]:
+    """Pre-populate agent deps from pre-flight retrieval results.
+
+    This ensures the output validator can succeed even when the model skips
+    calling search_chunks or fetch_chunk_context.  If the model does call
+    those tools, they will overwrite these fields with fresh data.
+    """
+    if not retrieval_results:
+        return {}, {}
+
+    search_results_by_id = {r.chunk_id: r for r in retrieval_results}
+    chunk_ids = list(search_results_by_id)
+    fetched = load_chunk_context(
+        session=session,
+        chunk_ids=chunk_ids,
+        document_ids=document_ids,
+    )
+    fetched_chunks_by_id = {r.chunk_id: r for r in fetched}
+    return search_results_by_id, fetched_chunks_by_id

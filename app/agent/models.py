@@ -9,7 +9,7 @@ class Citation(BaseModel):
     filename: str
     page_number: int | None
     section_title: str | None
-    quote: str = Field(min_length=1, max_length=300)
+    quote: str = Field(min_length=1)
 
 
 class AnswerResult(BaseModel):

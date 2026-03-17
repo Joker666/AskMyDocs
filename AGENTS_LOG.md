@@ -94,3 +94,26 @@
 ### Next
 
 - Consider improving the system prompt with explicit tool-calling and formatting instructions if validation failures persist.
+
+## 2026-03-17 18:54
+
+### Completed
+
+- Expanded `QUERY_SYSTEM_PROMPT` with explicit instructions to call `fetch_chunk_context` before answering, copy quotes verbatim, and clarify the zero-confidence path.
+- Added `_preseed_deps` in `query_service.py` to pre-populate `search_results_by_id` and `fetched_chunks_by_id` from pre-flight retrieval results before running the agent.
+- Renamed `_load_chunk_context` → `load_chunk_context` in `tools.py` to make it importable by `query_service.py`.
+
+### Files Changed
+
+- app/agent/prompts.py
+- app/agent/tools.py
+- app/services/query_service.py
+
+### Notes
+
+- Pre-seeding means the output validator has chunk data available even if the model skips tool calls. If the model does call the tools, they overwrite the pre-seeded data.
+- The prompt now makes the required workflow (search → fetch → answer) and quote rules explicitly clear.
+
+### Next
+
+- Monitor whether validation failures persist with these combined changes.

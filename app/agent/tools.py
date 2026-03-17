@@ -179,7 +179,7 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
             ctx.deps.fetched_chunks_by_id = {}
             return []
 
-        records = _load_chunk_context(
+        records = load_chunk_context(
             session=ctx.deps.session,
             chunk_ids=allowed_chunk_ids,
             document_ids=ctx.deps.document_ids,
@@ -250,7 +250,7 @@ def _resolve_scoped_document_ids(
     ]
 
 
-def _load_chunk_context(
+def load_chunk_context(
     *,
     session: Session,
     chunk_ids: list[int],
