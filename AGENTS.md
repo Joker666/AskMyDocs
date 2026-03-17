@@ -18,7 +18,7 @@ The system ingests local PDF documents, extracts structured text, chunks and emb
 
 ## Goal
 
-Build a small but clean MVP that demonstrates:
+Maintain and extend a small, clean MVP that already demonstrates:
 
 1. PDF ingestion
 2. structured document parsing
@@ -27,7 +27,7 @@ Build a small but clean MVP that demonstrates:
 5. typed, validated final answers
 6. citation-aware responses
 
-This project should be easy to run locally and easy to extend later.
+Favor incremental improvements over broad rewrites. Keep the project easy to run locally and easy to extend later.
 
 ---
 
@@ -49,9 +49,9 @@ This project should be easy to run locally and easy to extend later.
 
 ---
 
-## Non-Goals for MVP
+## Non-Goals
 
-Do not build these yet unless the core path is complete:
+Do not add these unless the user explicitly asks for them or a change clearly requires them:
 
 - authentication
 - multi-user tenancy
@@ -128,7 +128,7 @@ Uploaded PDF files
 
 ## Directory Structure
 
-Use this exact structure unless there is a strong reason to change it.
+Preserve this structure unless there is a strong reason to change it.
 
 ```text
 askmydocs/
@@ -195,7 +195,7 @@ askmydocs/
 
 ## Data Model
 
-Implement these database tables.
+Keep these database tables and contracts stable unless a change explicitly requires schema work.
 
 ### documents
 
@@ -212,7 +212,7 @@ Fields:
 - created_at
 - updated_at
 
-Recommended `documents.status` values for MVP:
+Recommended `documents.status` values:
 
 - `uploaded`
 - `ingesting`
@@ -237,9 +237,7 @@ Fields:
 
 ### ingestion_jobs
 
-Required for MVP.
-
-Use `FastAPI BackgroundTasks` and persistent job state.
+Persistent ingestion job state.
 
 Fields:
 
@@ -250,7 +248,7 @@ Fields:
 - started_at
 - completed_at
 
-Recommended `ingestion_jobs.status` values for MVP:
+Recommended `ingestion_jobs.status` values:
 
 - `pending`
 - `running`
@@ -261,7 +259,7 @@ Recommended `ingestion_jobs.status` values for MVP:
 
 ## Pydantic Models
 
-Create these first.
+These schemas define the core answer contract and should remain compatible unless the user asks to change the API.
 
 ### Agent output schema
 
@@ -288,16 +286,7 @@ Rules:
 
 ### API schemas
 
-Create:
-
-- `DocumentUploadResponse`
-- `DocumentListResponse`
-- `DocumentDetailResponse`
-- `IngestionStatusResponse`
-- `QueryRequest`
-- `QueryResponse`
-
-Use these exact payload shapes for MVP:
+Maintain these payload shapes unless an API contract change is explicitly requested:
 
 ```python
 class DocumentSummary(BaseModel):
@@ -368,7 +357,7 @@ Returns:
 - `GET /documents/{document_id}`
 - `POST /documents/{document_id}/ingest`
 
-For MVP, `POST /documents/upload` accepts a single PDF file per request. Uploading multiple files is supported by making repeated calls.
+For the current API, `POST /documents/upload` accepts a single PDF file per request. Uploading multiple files is supported by making repeated calls.
 
 Response contracts:
 
@@ -410,15 +399,13 @@ Example response:
 }
 ```
 
-`POST /query` returns `QueryResponse`. `citations` are the only chunk references returned by the API for MVP.
+`POST /query` returns `QueryResponse`. `citations` are the only chunk references returned by the API.
 
 ---
 
 ## Tooling Contract for the Agent
 
-The agent must use tool calling through Pydantic AI.
-
-Implement these tools.
+The agent should use tool calling through Pydantic AI.
 
 ### 1. `list_documents()`
 
@@ -502,7 +489,7 @@ System prompt should make these constraints explicit:
 
 ## Ingestion Pipeline
 
-Build the ingestion flow in this order.
+Preserve the ingestion flow in this order unless a change clearly needs a different sequence.
 
 ### Step 1. Save uploaded file
 
@@ -544,22 +531,22 @@ Chunking rules:
 
 ## Retrieval Rules
 
-Implement cosine similarity search first.
+Use cosine similarity search as the baseline retrieval behavior.
 
-MVP retrieval plan:
+Retrieval plan:
 
 1. embed user query
 2. filter by optional document IDs
 3. retrieve top-k nearest chunks
 4. return chunk metadata and similarity scores
 
-Do not implement reranking yet.
+Do not add reranking unless explicitly requested.
 
 ---
 
 ## Environment Variables
 
-Create `.env.example` with these keys:
+Keep `.env.example` aligned with these keys:
 
 ```env
 APP_ENV=development
@@ -595,117 +582,33 @@ Notes:
 
 ## Docker Compose
 
-Provide a `docker-compose.yml` for local development with:
+Keep `docker-compose.yml` suitable for local development with:
 
 - postgres
 - pgvector-enabled image
 
-Do not containerize Ollama for MVP unless it is trivial and stable on the target machine. Assume Ollama runs locally on the host.
+Do not containerize Ollama unless explicitly requested or it becomes trivial and stable on the target machine. Assume Ollama runs locally on the host.
 
 ---
 
-## Development Phases
+## Current Baseline
 
-Complete work in phases. Update `AGENTS_LOG.md` after each phase.
+Treat the current application as the working baseline:
 
-### Phase 1: Project bootstrap
+- health checks are implemented
+- document upload, listing, detail, and ingestion endpoints exist
+- Docling parsing and chunking are wired in
+- embeddings and pgvector retrieval are implemented
+- `/query` uses Pydantic AI with typed citations
+- structured logging and basic tests are already in place
 
-Tasks:
-
-- initialize Python project
-- add dependencies
-- create app skeleton
-- create docker-compose for Postgres
-- set up DB session and models
-- add health endpoint
-
-Acceptance criteria:
-
-- app starts
-- `/health` returns success
-- DB connection works
-
-### Phase 2: Document upload and storage
-
-Tasks:
-
-- implement upload endpoint
-- save files to disk
-- create document row
-- implement list documents endpoint
-
-Acceptance criteria:
-
-- PDF upload works
-- document appears in DB
-- file is present on disk
-
-### Phase 3: Parsing and chunking
-
-Tasks:
-
-- integrate Docling parser
-- build chunker
-- preserve metadata
-- add ingestion endpoint
-
-Acceptance criteria:
-
-- uploaded PDF can be parsed
-- chunks are created with metadata
-- ingestion status is visible
-- `ingestion_jobs` is populated and updated correctly
-
-### Phase 4: Embeddings and pgvector retrieval
-
-Tasks:
-
-- add Ollama embedding client
-- store vectors in pgvector
-- implement similarity search
-- write retrieval tests
-
-Acceptance criteria:
-
-- chunks are embedded and stored
-- query embedding search returns relevant chunks
-
-### Phase 5: Pydantic AI agent
-
-Tasks:
-
-- define answer schema
-- create tools
-- wire Pydantic AI to Ollama's Anthropic-compatible API
-- implement `/query`
-
-Acceptance criteria:
-
-- agent uses retrieval tools
-- response validates against schema
-- citations refer to real chunks
-
-### Phase 6: Quality and polish
-
-Tasks:
-
-- add logging
-- improve error handling
-- add README
-- add basic tests
-- add bootstrap and sample ingestion scripts
-
-Acceptance criteria:
-
-- clean local setup
-- clear README instructions
-- passing tests
+When making changes, prefer preserving API compatibility and extending behavior incrementally.
 
 ---
 
 ## Testing Strategy
 
-Add tests for the following:
+Add or update tests for the following when relevant:
 
 ### Unit tests
 
@@ -744,7 +647,7 @@ Responses should be informative but short. Do not leak stack traces to API consu
 
 ## Logging
 
-Add structured logs for:
+Add or maintain structured logs for:
 
 - upload started/completed
 - ingestion started/completed/failed
@@ -755,11 +658,11 @@ Add structured logs for:
 
 ---
 
-## Performance Constraints for MVP
+## Performance Constraints
 
 Keep it simple and safe:
 
-- synchronous ingestion is acceptable for first pass
+- synchronous ingestion is acceptable unless the user asks for more
 - document size target: small to medium PDFs
 - avoid premature optimization
 - prefer readable code over abstraction-heavy design
@@ -814,24 +717,21 @@ Keep it simple and safe:
 
 ---
 
-## Definition of Done
+## Change Acceptance
 
-The MVP is done when all of the following are true:
+A change is complete when all of the following are true:
 
-- a PDF can be uploaded
-- the PDF can be parsed and chunked
-- chunks can be embedded and stored in pgvector
-- a question can be asked through `/query`
-- the agent uses tool calling to retrieve evidence
-- the final answer is validated by Pydantic
-- citations reference real stored chunks
-- the project runs locally with documented setup steps
+- the affected behavior works locally
+- tests were updated or verified as appropriate
+- existing document-grounded and citation-aware behavior is preserved
+- user-facing API or schema changes are intentional and documented
+- `README.md`, `.env.example`, or scripts were updated if setup or operation changed
 
 ---
 
-## Stretch Goals After MVP
+## Future Work
 
-Only start these after MVP is complete.
+These remain reasonable next steps, but only pursue them when explicitly requested:
 
 1. reranking
 2. streaming answers
@@ -848,13 +748,7 @@ Only start these after MVP is complete.
 
 ## Required `AGENTS_LOG.md` Format
 
-After each meaningful step, append a dated log entry with:
-
-- what was done
-- files created/changed
-- current status
-- blockers
-- next step
+Keep `AGENTS_LOG.md` concise. Do not log every minor iteration. Append an entry only after a meaningful completed change, and compress related work into a single entry when possible.
 
 Use this template:
 
@@ -878,11 +772,13 @@ Use this template:
 - ...
 ```
 
+If the log becomes long, condense older entries into a short historical summary instead of preserving a phase-by-phase transcript.
+
 ---
 
 ## Final Instruction to the Agent
 
-Build the smallest clean version that works end to end.
+Maintain the smallest clean version that works end to end.
 
 Priority order:
 
@@ -892,4 +788,4 @@ Priority order:
 4. typed outputs
 5. local reproducibility
 
-Do not over-engineer the MVP.
+Do not over-engineer the project.

@@ -218,6 +218,41 @@ Behavior notes:
 - Retrieval no-hit responses return a normal `200` with empty citations and `confidence: 0.0`.
 - Dependency failures during live retrieval return sanitized `5xx` responses instead of raw stack traces.
 
+### Query Lifecycle
+
+The `/query` path has a deliberate two-stage retrieval flow:
+
+1. The service resolves the allowed ready documents.
+2. It runs a retrieval preflight.
+3. If retrieval returns no hits, the API skips the LLM and returns the fixed no-hit response.
+4. If retrieval finds hits, the Pydantic AI agent runs and the model may call tools such as `search_chunks` and `fetch_chunk_context`.
+5. Final citations are validated against fetched chunk context before the answer is returned.
+
+```mermaid
+flowchart TD
+    A["POST /query"] --> B["Resolve queryable document IDs"]
+    B --> C["Preflight vector retrieval"]
+    C --> D{"Any hits?"}
+    D -- "No" --> E["Return 200 with empty citations and confidence 0.0"]
+    D -- "Yes" --> F["Run Pydantic AI agent"]
+    F --> G["Model chooses whether to call registered tools"]
+    G --> H["search_chunks(query, document_ids, top_k)"]
+    H --> I["Top semantic hits"]
+    I --> J["fetch_chunk_context(chunk_ids)"]
+    J --> K["build_chunk_context(): expand each hit to a same-document +/-1 chunk window"]
+    K --> L["Model drafts AnswerResult"]
+    L --> M{"Output validator passes?"}
+    M -- "No" --> N["ModelRetry: force another grounded attempt"]
+    N --> G
+    M -- "Yes" --> O["Return answer + validated citations"]
+```
+
+Notes:
+
+- Tool availability is defined in `app/agent/tools.py`, but tool selection during the agent run is done by the model.
+- `fetch_chunk_context` is constrained to chunks from the current search scope.
+- Context expansion is local adjacency expansion, not reranking or summarization.
+
 ## Helper Scripts
 
 ### Demo ingest script
