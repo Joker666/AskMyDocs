@@ -52,14 +52,16 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
             job.error_message = None
             document.status = "ingesting"
             document.updated_at = _utcnow()
+            document_filename = document.filename
+            document_file_path = document.file_path
             session.add(document)
             session.add(job)
             session.commit()
 
         parsed_document = parse_document(
             document_id=document_id,
-            filename=document.filename,
-            source_path=document.file_path,
+            filename=document_filename,
+            source_path=document_file_path,
         )
         _write_parsed_artifact(artifact_temp_path, parsed_document)
 
@@ -79,6 +81,7 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
             ).all()
             for existing_chunk in existing_chunks:
                 session.delete(existing_chunk)
+            session.flush()
             for chunk in chunks:
                 session.add(
                     DocumentChunk(

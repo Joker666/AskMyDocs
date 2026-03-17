@@ -134,3 +134,25 @@
 ### Next
 
 - Continue Phase 4 work against the refreshed lockfile and dependency bounds.
+
+## 2026-03-17 10:57
+
+### Completed
+
+- Fixed the ingestion pipeline to capture document metadata before the SQLModel session is closed, preventing detached-instance failures in background ingestion.
+- Flushed chunk deletions before inserting replacement chunks during re-ingestion so the `(document_id, chunk_index)` uniqueness constraint is not violated.
+- Verified the ingestion flow with `uv run pytest tests/test_ingestion.py`.
+
+### Files Changed
+
+- app/ingestion/pipeline.py
+- AGENTS_LOG.md
+
+### Notes
+
+- The detached-instance error was triggered by reading `document.filename` and `document.file_path` after the session commit/close boundary in `run_ingestion_job`.
+- Re-ingesting the same document exposed a second bug where old and new chunks shared chunk indexes inside one transaction.
+
+### Next
+
+- Continue Phase 4 work on embeddings and retrieval, with the ingestion pipeline now stable for repeated runs.
