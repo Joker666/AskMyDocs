@@ -60,3 +60,32 @@
 ### Next
 
 - Implement Phase 3 parsing, chunking, and the real ingestion endpoint.
+
+## 2026-03-17 03:00
+
+### Completed
+
+- Implemented the asynchronous ingestion endpoint with persistent `ingestion_jobs` tracking and document status transitions.
+- Added Docling-based parsing, normalized parsed JSON artifacts, deterministic chunking, and chunk replacement on re-ingest.
+- Kept embeddings unset in Phase 3 while storing parsed chunk metadata in `document_chunks`.
+- Added unit and integration tests for chunking, ingest success, re-ingest replacement, conflict handling, missing source files, and parser failure paths.
+
+### Files Changed
+
+- README.md
+- scripts/ingest_sample.py
+- app/api/routes_documents.py
+- app/services/document_service.py
+- app/ingestion/
+- tests/
+- AGENTS_LOG.md
+
+### Notes
+
+- `POST /documents/{document_id}/ingest` returns `202` immediately with a pending job, while `GET /documents/{document_id}` is the polling surface.
+- Parsed artifacts are stored as normalized JSON in `PARSED_DIR/<document_id>.json`.
+- Re-ingesting a document replaces prior chunks instead of appending duplicates.
+
+### Next
+
+- Implement Phase 4 embeddings, vector storage, and retrieval.

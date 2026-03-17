@@ -93,7 +93,26 @@ Notes:
 
 - Uploads are idempotent by checksum. Uploading the same PDF again returns the existing document.
 - Files are stored under `UPLOAD_DIR/<sha256>.pdf` while the original filename is preserved in the database.
-- `POST /documents/{document_id}/ingest` is intentionally deferred to Phase 3.
+
+## Ingestion
+
+Trigger asynchronous parsing and chunking for an uploaded document:
+
+```bash
+curl -X POST http://127.0.0.1:8000/documents/1/ingest
+```
+
+The endpoint returns `202 Accepted` with a pending ingestion job. Poll `GET /documents/1` to observe:
+
+- `status` moving through `uploaded` -> `ingesting` -> `ready` or `failed`
+- `latest_ingestion.status` moving through `pending` -> `running` -> `completed` or `failed`
+- `chunk_count` becoming non-zero once chunk storage finishes
+
+After a successful ingest, the normalized parsed artifact is written to:
+
+```text
+PARSED_DIR/<document_id>.json
+```
 
 ## Bootstrap Script
 

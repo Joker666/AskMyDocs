@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,7 @@ from app.config import Settings
 from app.db.models import Document, DocumentChunk, IngestionJob
 from app.db.session import get_engine
 from app.dependencies import get_app_settings, get_db_session
+from app.ingestion.parser import DocumentParseError, parse_document
 from app.main import app
 
 
@@ -69,15 +71,78 @@ def document_test_environment(tmp_path):
         session.commit()
 
 
-def pdf_bytes(title: str = "Sample") -> bytes:
-    return (
-        b"%PDF-1.4\n"
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-        b"2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n"
-        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] >>\nendobj\n"
-        b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
-        + title.encode("utf-8")
+def build_pdf(pages: list[list[str]]) -> bytes:
+    objects: list[bytes] = []
+
+    def add_object(payload: bytes) -> int:
+        objects.append(payload)
+        return len(objects)
+
+    font_id = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    page_ids: list[int] = []
+
+    for page_lines in pages:
+        stream_lines = [b"BT", b"/F1 14 Tf", b"72 720 Td"]
+        first_line = True
+        for line in page_lines:
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            if not first_line:
+                stream_lines.append(b"0 -22 Td")
+            stream_lines.append(f"({escaped}) Tj".encode())
+            first_line = False
+        stream_lines.append(b"ET")
+        stream = b"\n".join(stream_lines)
+        content_id = add_object(b"<< /Length %d >>\nstream\n%b\nendstream" % (len(stream), stream))
+        page_id = add_object(
+            b"<< /Type /Page /Parent 0 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>"
+            % (font_id, content_id)
+        )
+        page_ids.append(page_id)
+
+    kids_refs = b" ".join(f"{page_id} 0 R".encode() for page_id in page_ids)
+    pages_id = add_object(b"<< /Type /Pages /Count %d /Kids [ %b ] >>" % (len(page_ids), kids_refs))
+    catalog_id = add_object(b"<< /Type /Catalog /Pages %d 0 R >>" % pages_id)
+
+    for page_id in page_ids:
+        objects[page_id - 1] = objects[page_id - 1].replace(
+            b"/Parent 0 0 R", b"/Parent %d 0 R" % pages_id
+        )
+
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{index} 0 obj\n".encode())
+        pdf.extend(obj)
+        pdf.extend(b"\nendobj\n")
+
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode())
+    pdf.extend(
+        b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+        % (len(objects) + 1, catalog_id, xref_offset)
     )
+    return bytes(pdf)
+
+
+def pdf_bytes(title: str = "Sample") -> bytes:
+    return build_pdf([[title, "Short PDF body for upload validation."]])
+
+
+def ingestable_pdf_bytes() -> bytes:
+    page_one = [
+        "Phase 3 Parser Title",
+        " ".join(f"page1-token-{idx:03d}" for idx in range(80)),
+    ]
+    page_two = [
+        "Phase 3 Parser Continuation",
+        " ".join(f"page2-token-{idx:03d}" for idx in range(80)),
+    ]
+    return build_pdf([page_one, page_two])
 
 
 def test_upload_valid_pdf_creates_document(document_test_environment) -> None:
@@ -219,3 +284,170 @@ def test_get_document_detail_returns_404_for_missing_document(document_test_envi
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Document not found."}
+
+
+def test_parser_normalizes_docling_output(document_test_environment) -> None:
+    _, settings, _ = document_test_environment
+    source_path = Path(settings.upload_dir) / "parser-sample.pdf"
+    source_path.write_bytes(ingestable_pdf_bytes())
+
+    parsed = parse_document(document_id=1, filename="parser-sample.pdf", source_path=source_path)
+
+    assert parsed.document_id == 1
+    assert parsed.page_count == 2
+    assert parsed.pages[0].page_number == 1
+    assert parsed.pages[1].page_number == 2
+    assert any("Phase 3 Parser Title" in block.text for block in parsed.pages[0].blocks)
+
+
+def test_ingest_document_runs_background_pipeline(document_test_environment) -> None:
+    client, settings, engine = document_test_environment
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("ingestable.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    response = client.post(f"/documents/{document_id}/ingest")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "pending"
+    assert response.json()["chunk_count"] == 0
+
+    detail = client.get(f"/documents/{document_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+
+    assert body["status"] == "ready"
+    assert body["page_count"] == 2
+    assert body["chunk_count"] > 0
+    assert body["latest_ingestion"]["status"] == "completed"
+
+    parsed_artifact = Path(settings.parsed_dir) / f"{document_id}.json"
+    assert parsed_artifact.exists()
+    artifact_body = json.loads(parsed_artifact.read_text(encoding="utf-8"))
+    assert artifact_body["document_id"] == document_id
+    assert artifact_body["page_count"] == 2
+
+    with Session(engine) as session:
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        ).all()
+        assert len(chunks) == body["chunk_count"]
+        assert all(chunk.embedding is None for chunk in chunks)
+
+
+def test_reingest_replaces_existing_chunks(document_test_environment) -> None:
+    client, _, engine = document_test_environment
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("reingest.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    first = client.post(f"/documents/{document_id}/ingest")
+    second = client.post(f"/documents/{document_id}/ingest")
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+
+    with Session(engine) as session:
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        ).all()
+        jobs = session.exec(
+            select(IngestionJob).where(IngestionJob.document_id == document_id)
+        ).all()
+        assert len(chunks) > 0
+        assert len(jobs) == 2
+
+    detail = client.get(f"/documents/{document_id}")
+    assert detail.json()["latest_ingestion"]["status"] == "completed"
+    assert detail.json()["chunk_count"] == len(chunks)
+
+
+def test_ingest_missing_document_returns_404(document_test_environment) -> None:
+    client, _, _ = document_test_environment
+
+    response = client.post("/documents/999999/ingest")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Document not found."}
+
+
+def test_ingest_conflicts_with_running_job(document_test_environment) -> None:
+    client, _, engine = document_test_environment
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("conflict.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    with Session(engine) as session:
+        session.add(IngestionJob(document_id=document_id, status="running"))
+        session.commit()
+
+    response = client.post(f"/documents/{document_id}/ingest")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Document ingestion is already in progress."}
+
+
+def test_ingest_rejects_missing_source_file(document_test_environment) -> None:
+    client, settings, _ = document_test_environment
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("missing-source.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    stored_file = next(Path(settings.upload_dir).glob("*.pdf"))
+    stored_file.unlink()
+
+    response = client.post(f"/documents/{document_id}/ingest")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Document source file is missing."}
+
+
+def test_ingest_failure_marks_job_and_document_failed(
+    document_test_environment,
+    monkeypatch,
+) -> None:
+    client, settings, engine = document_test_environment
+
+    def fake_parse_document(*, document_id: int, filename: str, source_path: str | Path):
+        raise DocumentParseError("Docling parsing failed because the test forced an error.")
+
+    monkeypatch.setattr("app.ingestion.pipeline.parse_document", fake_parse_document)
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("failing.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    response = client.post(f"/documents/{document_id}/ingest")
+
+    assert response.status_code == 202
+
+    detail = client.get(f"/documents/{document_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["status"] == "failed"
+    assert body["chunk_count"] == 0
+    assert body["latest_ingestion"]["status"] == "failed"
+    assert len(body["latest_ingestion"]["error_message"]) <= 200
+
+    artifact_path = Path(settings.parsed_dir) / f"{document_id}.json"
+    assert not artifact_path.exists()
+
+    with Session(engine) as session:
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        ).all()
+        assert chunks == []

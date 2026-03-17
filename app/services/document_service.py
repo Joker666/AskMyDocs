@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, desc, select
+from sqlmodel import Session, col, desc, select
 
 from app.config import Settings
 from app.db.models import Document, DocumentChunk, IngestionJob
@@ -30,14 +31,28 @@ class InvalidPdfUploadError(DocumentServiceError):
     """Raised when an uploaded file is not a valid PDF."""
 
 
+class DocumentIngestionConflictError(DocumentServiceError):
+    """Raised when a document cannot begin ingestion in its current state."""
+
+
 @dataclass(frozen=True)
 class UploadResult:
     document: Document
     created: bool
 
 
+@dataclass(frozen=True)
+class IngestionStartResult:
+    document: Document
+    job: IngestionJob
+
+
 def _short_error(message: str) -> str:
     return message.strip()[:200]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 def validate_pdf_upload(*, filename: str | None, content_type: str | None, content: bytes) -> None:
@@ -85,13 +100,17 @@ def _latest_ingestion(session: Session, document_id: int) -> IngestionStatusResp
         error_message=job.error_message,
         started_at=job.started_at,
         completed_at=job.completed_at,
-        chunk_count=_chunk_count(session, document_id),
+        chunk_count=_chunk_count(session, document_id) if job.status == "completed" else 0,
     )
 
 
 def _chunk_count(session: Session, document_id: int) -> int:
     statement = select(DocumentChunk).where(DocumentChunk.document_id == document_id)
     return len(session.exec(statement).all())
+
+
+def _source_path(document: Document) -> Path:
+    return Path(document.file_path)
 
 
 def upload_document(
@@ -164,3 +183,62 @@ def get_document_detail(*, session: Session, document_id: int) -> DocumentDetail
 
 def document_upload_response(document: Document) -> DocumentUploadResponse:
     return DocumentUploadResponse(document=_document_summary(document))
+
+
+def get_document_record(*, session: Session, document_id: int) -> Document:
+    document = session.get(Document, document_id)
+    if document is None or document.id is None:
+        raise DocumentNotFoundError(_short_error("Document not found."))
+    return document
+
+
+def start_document_ingestion(*, session: Session, document_id: int) -> IngestionStartResult:
+    document = get_document_record(session=session, document_id=document_id)
+
+    if not _source_path(document).exists():
+        raise DocumentIngestionConflictError(_short_error("Document source file is missing."))
+
+    active_job = session.exec(
+        select(IngestionJob)
+        .where(IngestionJob.document_id == document_id)
+        .where(col(IngestionJob.status).in_(("pending", "running")))
+        .order_by(desc(IngestionJob.created_at), desc(IngestionJob.id))
+    ).first()
+    if active_job is not None:
+        raise DocumentIngestionConflictError(
+            _short_error("Document ingestion is already in progress.")
+        )
+
+    job = IngestionJob(
+        document_id=document_id,
+        status="pending",
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    session.add(job)
+    document.updated_at = _utcnow()
+    session.add(document)
+    session.commit()
+    session.refresh(job)
+    session.refresh(document)
+    return IngestionStartResult(document=document, job=job)
+
+
+def ingestion_status_response(
+    job: IngestionJob,
+    *,
+    chunk_count: int = 0,
+) -> IngestionStatusResponse:
+    if job.id is None:
+        raise DocumentServiceError(_short_error("Ingestion job is missing an identifier."))
+
+    return IngestionStatusResponse(
+        job_id=job.id,
+        document_id=job.document_id,
+        status=job.status,
+        error_message=job.error_message,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        chunk_count=chunk_count,
+    )
