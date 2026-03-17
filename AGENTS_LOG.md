@@ -73,3 +73,24 @@
 ### Next
 
 - Keep README and inline code documentation aligned if the retrieval pipeline or context-window behavior changes.
+
+## 2026-03-17 18:38
+
+### Completed
+
+- Relaxed quote validation in `validate_answer_result` to use fuzzy matching (`SequenceMatcher` ≥ 0.7) instead of exact substring containment.
+- Added `_backfill_citation_metadata` to auto-populate `document_id`, `filename`, `page_number`, and `section_title` from fetched chunks, removing four metadata-mismatch failure modes.
+- Allowed empty-citation answers when `confidence` is 0.0, enabling graceful "not found" responses without triggering retries.
+
+### Files Changed
+
+- app/agent/agent.py
+
+### Notes
+
+- The previous strict validation caused frequent "Exceeded maximum retries" errors because the LLM would paraphrase quotes or slightly alter metadata fields.
+- The model now only needs to get `chunk_id` and an approximate `quote` right; metadata is corrected automatically.
+
+### Next
+
+- Consider improving the system prompt with explicit tool-calling and formatting instructions if validation failures persist.

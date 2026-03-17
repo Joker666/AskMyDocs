@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from difflib import SequenceMatcher
 
 from anthropic import Anthropic
 from pydantic_ai import Agent, ModelRetry
@@ -21,10 +22,13 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_COMPAT_TIMEOUT_SECONDS = 5.0
 QUERY_AGENT_OUTPUT_RETRIES = 2
 MAX_CITATION_QUOTE_LENGTH = 300
+MIN_QUOTE_SIMILARITY_RATIO = 0.7
 
 
 class AnthropicCompatError(Exception):
     """Raised when Anthropic-compatible connectivity checks fail."""
+
+
 def _normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
 
@@ -67,17 +71,43 @@ def build_query_agent(
 
 
 def validate_answer_result(deps: QueryAgentDeps, data: AnswerResult) -> AnswerResult:
+    if not data.citations and data.confidence > 0.0:
+        raise ModelRetry(
+            "Non-zero confidence requires at least one citation. "
+            "Set confidence to 0.0 if no relevant information was found."
+        )
+
     if not data.citations:
-        raise ModelRetry("The final answer must include citations from fetched chunk context.")
+        return data
 
     fetched_chunks = deps.fetched_chunks_by_id
     if not fetched_chunks:
         raise ModelRetry("Fetch chunk context before returning the final answer.")
 
     for citation in data.citations:
+        _backfill_citation_metadata(fetched_chunks, citation)
         _validate_citation(fetched_chunks, citation)
 
     return data
+
+
+def _backfill_citation_metadata(
+    fetched_chunks: dict[int, ChunkContextResult],
+    citation: Citation,
+) -> None:
+    """Overwrite citation metadata fields from the fetched chunk record.
+
+    This removes the burden from the LLM to echo metadata exactly and
+    eliminates document_id / filename / page_number / section_title
+    mismatches as a source of validation failures.
+    """
+    chunk = fetched_chunks.get(citation.chunk_id)
+    if chunk is None:
+        return
+    citation.document_id = chunk.document_id
+    citation.filename = chunk.filename
+    citation.page_number = chunk.page_number
+    citation.section_title = chunk.section_title
 
 
 def _validate_citation(
@@ -88,30 +118,24 @@ def _validate_citation(
     if record is None:
         raise ModelRetry(f"Citation chunk {citation.chunk_id} was not fetched.")
 
-    chunk = record
-    chunk_document_id = chunk.document_id
-    if citation.document_id != chunk_document_id:
-        raise ModelRetry(f"Citation document mismatch for chunk {citation.chunk_id}.")
-
-    if citation.filename != chunk.filename:
-        raise ModelRetry(f"Citation filename mismatch for chunk {citation.chunk_id}.")
-
-    if citation.page_number != chunk.page_number:
-        raise ModelRetry(f"Citation page number mismatch for chunk {citation.chunk_id}.")
-
-    if citation.section_title != chunk.section_title:
-        raise ModelRetry(f"Citation section title mismatch for chunk {citation.chunk_id}.")
-
     quote = citation.quote.strip()
     if not quote:
         raise ModelRetry(f"Citation quote is empty for chunk {citation.chunk_id}.")
     if len(quote) > MAX_CITATION_QUOTE_LENGTH:
         raise ModelRetry(f"Citation quote is too long for chunk {citation.chunk_id}.")
 
-    normalized_quote = _normalize_whitespace(quote)
-    normalized_text = _normalize_whitespace(chunk.text)
-    if normalized_quote not in normalized_text:
-        raise ModelRetry(f"Citation quote was not found in chunk {citation.chunk_id}.")
+    normalized_quote = _normalize_whitespace(quote).lower()
+    normalized_text = _normalize_whitespace(record.text).lower()
+    if normalized_quote in normalized_text:
+        return
+
+    ratio = SequenceMatcher(None, normalized_quote, normalized_text).ratio()
+    if ratio < MIN_QUOTE_SIMILARITY_RATIO:
+        raise ModelRetry(
+            f"Citation quote for chunk {citation.chunk_id} does not closely match "
+            f"the chunk text (similarity {ratio:.0%}, need {MIN_QUOTE_SIMILARITY_RATIO:.0%}). "
+            f"Copy the quote verbatim from the chunk text."
+        )
 
 
 def check_anthropic_compat(settings: Settings) -> None:
