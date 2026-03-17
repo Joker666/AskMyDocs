@@ -46,6 +46,21 @@ class Settings(BaseSettings):
     parsed_dir: str = Field(default="./data/parsed", alias="PARSED_DIR")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    langfuse_public_key: SecretStr | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: SecretStr | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
+    langfuse_host: str | None = Field(
+        default=None,
+        alias="LANGFUSE_HOST",
+        validation_alias=AliasChoices("LANGFUSE_HOST", "LANGFUSE_BASE_URL"),
+    )
+    langfuse_tracing_enabled: bool = Field(default=True, alias="LANGFUSE_TRACING_ENABLED")
+    langfuse_tracing_environment: str | None = Field(
+        default=None,
+        alias="LANGFUSE_TRACING_ENVIRONMENT",
+    )
+    langfuse_release: str | None = Field(default=None, alias="LANGFUSE_RELEASE")
+    langfuse_sample_rate: float = Field(default=1.0, alias="LANGFUSE_SAMPLE_RATE")
+
     @property
     def database_url(self) -> str:
         password = self.postgres_password.get_secret_value()
@@ -60,6 +75,18 @@ class Settings(BaseSettings):
         return (
             f"postgresql://{self.postgres_user}:{password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def langfuse_base_url(self) -> str:
+        return self.langfuse_host or "https://cloud.langfuse.com"
+
+    @property
+    def langfuse_is_configured(self) -> bool:
+        return (
+            self.langfuse_tracing_enabled
+            and self.langfuse_public_key is not None
+            and self.langfuse_secret_key is not None
         )
 
 

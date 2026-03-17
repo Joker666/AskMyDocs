@@ -11,6 +11,7 @@ from sqlmodel import Session, desc, select
 from app.agent.models import AnswerResult
 from app.config import Settings
 from app.db.models import Document, DocumentChunk
+from app.observability import get_langfuse_client
 from app.retrieval.search import SearchResult
 from app.retrieval.search import search_chunks as run_search_chunks
 
@@ -67,7 +68,7 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         logger.info("agent_tool_called", extra={"tool_name": "list_documents"})
         statement = select(Document).order_by(desc(Document.created_at), desc(Document.id))
         documents = ctx.deps.session.exec(statement).all()
-        return [
+        result = [
             ListedDocument(
                 id=document.id,
                 filename=document.filename,
@@ -77,6 +78,16 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
             for document in documents
             if document.id is not None
         ]
+        client = get_langfuse_client(ctx.deps.settings)
+        if client is not None:
+            client.update_current_span(
+                input={"tool_name": "list_documents"},
+                output={
+                    "document_count": len(result),
+                    "document_ids": [document.id for document in result],
+                },
+            )
+        return result
 
     @agent.tool
     def search_chunks(
@@ -89,9 +100,20 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
             requested_document_ids=document_ids,
             allowed_document_ids=ctx.deps.document_ids,
         )
+        client = get_langfuse_client(ctx.deps.settings)
+        if client is not None:
+            client.update_current_span(
+                input={
+                    "document_ids": scoped_document_ids,
+                    "top_k": max(1, min(top_k, 20)),
+                    "query_length": len(query),
+                }
+            )
         if not scoped_document_ids:
             ctx.deps.search_results_by_id = {}
             ctx.deps.fetched_chunks_by_id = {}
+            if client is not None:
+                client.update_current_span(output={"result_count": 0})
             return []
 
         effective_top_k = max(1, min(top_k, 20))
@@ -113,7 +135,7 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         )
         ctx.deps.search_results_by_id = {result.chunk_id: result for result in results}
         ctx.deps.fetched_chunks_by_id = {}
-        return [
+        output = [
             SearchChunkResult(
                 chunk_id=result.chunk_id,
                 document_id=result.document_id,
@@ -125,16 +147,27 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
             )
             for result in results
         ]
+        if client is not None:
+            client.update_current_span(
+                output={
+                    "result_count": len(output),
+                    "chunk_ids": [result.chunk_id for result in output],
+                }
+            )
+        return output
 
     @agent.tool
     def fetch_chunk_context(
         ctx: RunContext[QueryAgentDeps],
         chunk_ids: list[int],
     ) -> list[ChunkContextResult]:
+        client = get_langfuse_client(ctx.deps.settings)
         logger.info(
             "agent_tool_called",
             extra={"tool_name": "fetch_chunk_context", "requested_chunk_count": len(chunk_ids)},
         )
+        if client is not None:
+            client.update_current_span(input={"requested_chunk_ids": chunk_ids})
         allowed_chunk_ids = [
             chunk_id
             for chunk_id in chunk_ids
@@ -160,6 +193,13 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         ctx.deps.fetched_chunks_by_id = {
             record.chunk_id: record for record in ordered_records
         }
+        if client is not None:
+            client.update_current_span(
+                output={
+                    "chunk_count": len(ordered_records),
+                    "chunk_ids": [record.chunk_id for record in ordered_records],
+                }
+            )
         return ordered_records
 
     @agent.tool
@@ -167,10 +207,13 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         ctx: RunContext[QueryAgentDeps],
         document_id: int,
     ) -> DocumentMetadataResult:
+        client = get_langfuse_client(ctx.deps.settings)
         logger.info(
             "agent_tool_called",
             extra={"tool_name": "get_document_metadata", "document_id": document_id},
         )
+        if client is not None:
+            client.update_current_span(input={"document_id": document_id})
         document = ctx.deps.session.get(Document, document_id)
         if document is None or document.id is None:
             raise ValueError("Document not found.")
@@ -180,13 +223,22 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
                 select(DocumentChunk).where(DocumentChunk.document_id == document_id)
             ).all()
         )
-        return DocumentMetadataResult(
+        result = DocumentMetadataResult(
             document_id=document.id,
             filename=document.filename,
             page_count=document.page_count,
             status=document.status,
             chunk_count=chunk_count,
         )
+        if client is not None:
+            client.update_current_span(
+                output={
+                    "document_id": result.document_id,
+                    "status": result.status,
+                    "chunk_count": result.chunk_count,
+                }
+            )
+        return result
 
 
 def _resolve_scoped_document_ids(

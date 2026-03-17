@@ -507,7 +507,7 @@ def test_ingest_logs_started_and_completed(document_test_environment, caplog) ->
 def test_ingest_route_returns_503_for_start_failure(document_test_environment, monkeypatch) -> None:
     client, _, _ = document_test_environment
 
-    def failing_start_document_ingestion(*, session, document_id: int):
+    def failing_start_document_ingestion(*, session, settings, document_id: int):
         raise SQLAlchemyError("database write failed\ninternal details")
 
     monkeypatch.setattr(

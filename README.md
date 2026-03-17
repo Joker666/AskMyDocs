@@ -60,6 +60,42 @@ They target different endpoint families:
 - `ANTHROPIC_BASE_URL` is for Ollama's Anthropic-compatible chat/tool-calling API
 - `OLLAMA_BASE_URL` is for Ollama native endpoints such as `/api/embed` and `/api/tags`
 
+## Langfuse Tracing
+
+AskMyDocs now emits Langfuse traces for:
+
+- FastAPI requests
+- document uploads
+- ingestion jobs
+- Ollama embedding calls
+- vector retrieval
+- Pydantic AI agent runs and tool calls
+
+Set these environment variables to enable tracing:
+
+```env
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://us.cloud.langfuse.com
+LANGFUSE_TRACING_ENABLED=true
+LANGFUSE_TRACING_ENVIRONMENT=development
+LANGFUSE_SAMPLE_RATE=1.0
+LANGFUSE_RELEASE=
+```
+
+Tracing currently sends content-rich traces:
+
+- Pydantic AI content capture is enabled, so prompts, completions, retrieved chunk text, and tool payload bodies are visible in Langfuse.
+- Request and service spans still record operational metadata such as filenames, document IDs, counts, status codes, and confidence.
+- Uploaded file bytes are still masked before export.
+
+Optional headers:
+
+- `X-Session-ID`: attaches a `session_id` to the trace for conversation or workflow grouping
+- `X-User-ID`: attaches a `user_id` to the trace for per-user filtering
+
+Test runs do not initialize Langfuse, which keeps `pytest` quiet and avoids exporting local test traffic.
+
 ## Run The API
 
 Start the server:

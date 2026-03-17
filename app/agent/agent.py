@@ -13,6 +13,7 @@ from app.agent.models import AnswerResult, Citation
 from app.agent.prompts import QUERY_SYSTEM_PROMPT
 from app.agent.tools import ChunkContextResult, QueryAgentDeps, register_query_tools
 from app.config import Settings
+from app.observability import build_pydantic_ai_instrumentation
 from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ def build_query_agent(
         output_type=AnswerResult,
         system_prompt=QUERY_SYSTEM_PROMPT,
         output_retries=QUERY_AGENT_OUTPUT_RETRIES,
+        instrument=build_pydantic_ai_instrumentation(settings),
     )
     register_query_tools(agent)
 

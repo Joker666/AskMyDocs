@@ -18,6 +18,7 @@ from app.db.schemas import (
     DocumentUploadResponse,
     IngestionStatusResponse,
 )
+from app.observability import start_observation
 from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class UploadResult:
 class IngestionStartResult:
     document: Document
     job: IngestionJob
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -131,69 +134,114 @@ def upload_document(
     content_type: str | None,
     content: bytes,
 ) -> UploadResult:
-    logger.info(
-        "document_upload_started",
-        extra={
-            "upload_filename": filename or "<missing>",
+    with start_observation(
+        settings,
+        name="documents.upload",
+        as_type="span",
+        input={
+            "filename": filename or "<missing>",
             "content_type": content_type or "<missing>",
             "size_bytes": len(content),
         },
-    )
-    validate_pdf_upload(filename=filename, content_type=content_type, content=content)
-    checksum = compute_checksum(content)
-
-    existing = session.exec(select(Document).where(Document.checksum == checksum)).first()
-    if existing is not None:
+        metadata={"service": "document_service"},
+    ) as span:
         logger.info(
-            "document_upload_completed",
+            "document_upload_started",
             extra={
-                "document_id": existing.id,
-                "was_created": False,
-                "checksum": checksum,
+                "upload_filename": filename or "<missing>",
+                "content_type": content_type or "<missing>",
+                "size_bytes": len(content),
             },
         )
-        return UploadResult(document=existing, created=False)
+        try:
+            validate_pdf_upload(filename=filename, content_type=content_type, content=content)
+            checksum = compute_checksum(content)
 
-    storage_path = _storage_path(settings, checksum)
-    storage_path.parent.mkdir(parents=True, exist_ok=True)
-    storage_path.write_bytes(content)
+            existing = session.exec(select(Document).where(Document.checksum == checksum)).first()
+            if existing is not None:
+                logger.info(
+                    "document_upload_completed",
+                    extra={
+                        "document_id": existing.id,
+                        "was_created": False,
+                        "checksum": checksum,
+                    },
+                )
+                if span is not None:
+                    span.update(
+                        output={
+                            "document_id": existing.id,
+                            "created": False,
+                            "status": existing.status,
+                        }
+                    )
+                return UploadResult(document=existing, created=False)
 
-    document = Document(
-        filename=filename or f"{checksum}.pdf",
-        file_path=_storage_reference(settings, checksum),
-        checksum=checksum,
-        page_count=None,
-        status="uploaded",
-    )
-    session.add(document)
+            storage_path = _storage_path(settings, checksum)
+            storage_path.parent.mkdir(parents=True, exist_ok=True)
+            storage_path.write_bytes(content)
 
-    try:
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        existing = session.exec(select(Document).where(Document.checksum == checksum)).first()
-        if existing is not None:
+            document = Document(
+                filename=filename or f"{checksum}.pdf",
+                file_path=_storage_reference(settings, checksum),
+                checksum=checksum,
+                page_count=None,
+                status="uploaded",
+            )
+            session.add(document)
+
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.exec(
+                    select(Document).where(Document.checksum == checksum)
+                ).first()
+                if existing is not None:
+                    logger.info(
+                        "document_upload_completed",
+                        extra={
+                            "document_id": existing.id,
+                            "was_created": False,
+                            "checksum": checksum,
+                        },
+                    )
+                    if span is not None:
+                        span.update(
+                            output={
+                                "document_id": existing.id,
+                                "created": False,
+                                "status": existing.status,
+                            }
+                        )
+                    return UploadResult(document=existing, created=False)
+                raise
+
+            session.refresh(document)
             logger.info(
                 "document_upload_completed",
                 extra={
-                    "document_id": existing.id,
-                    "was_created": False,
+                    "document_id": document.id,
+                    "was_created": True,
                     "checksum": checksum,
                 },
             )
-            return UploadResult(document=existing, created=False)
-        raise
-
-    session.refresh(document)
-    logger.info(
-        "document_upload_completed",
-        extra={
-            "document_id": document.id,
-            "was_created": True,
-            "checksum": checksum,
-        },
-    )
-    return UploadResult(document=document, created=True)
+            if span is not None:
+                span.update(
+                    output={
+                        "document_id": document.id,
+                        "created": True,
+                        "status": document.status,
+                    }
+                )
+            return UploadResult(document=document, created=True)
+        except Exception as exc:
+            if span is not None:
+                span.update(
+                    level="ERROR",
+                    status_message=safe_error_detail(exc, fallback="Document upload failed."),
+                )
+            raise
 
 
 def list_documents(*, session: Session) -> DocumentListResponse:
@@ -243,53 +291,84 @@ def get_document_record(*, session: Session, document_id: int) -> Document:
     return document
 
 
-def start_document_ingestion(*, session: Session, document_id: int) -> IngestionStartResult:
-    document = get_document_record(session=session, document_id=document_id)
+def start_document_ingestion(
+    *,
+    session: Session,
+    settings: Settings,
+    document_id: int,
+) -> IngestionStartResult:
+    with start_observation(
+        settings,
+        name="documents.ingest.request",
+        as_type="span",
+        input={"document_id": document_id},
+        metadata={"service": "document_service"},
+    ) as span:
+        try:
+            document = get_document_record(session=session, document_id=document_id)
 
-    if not _source_path(document).exists():
-        raise DocumentIngestionConflictError(
-            safe_error_detail(
-                "Document source file is missing.",
-                fallback="Document source file is missing.",
+            if not _source_path(document).exists():
+                raise DocumentIngestionConflictError(
+                    safe_error_detail(
+                        "Document source file is missing.",
+                        fallback="Document source file is missing.",
+                    )
+                )
+
+            active_job = session.exec(
+                select(IngestionJob)
+                .where(IngestionJob.document_id == document_id)
+                .where(col(IngestionJob.status).in_(("pending", "running")))
+                .order_by(desc(IngestionJob.created_at), desc(IngestionJob.id))
+            ).first()
+            if active_job is not None:
+                raise DocumentIngestionConflictError(
+                    safe_error_detail(
+                        "Document ingestion is already in progress.",
+                        fallback="Document ingestion is already in progress.",
+                    )
+                )
+
+            job = IngestionJob(
+                document_id=document_id,
+                status="pending",
+                error_message=None,
+                started_at=None,
+                completed_at=None,
             )
-        )
-
-    active_job = session.exec(
-        select(IngestionJob)
-        .where(IngestionJob.document_id == document_id)
-        .where(col(IngestionJob.status).in_(("pending", "running")))
-        .order_by(desc(IngestionJob.created_at), desc(IngestionJob.id))
-    ).first()
-    if active_job is not None:
-        raise DocumentIngestionConflictError(
-            safe_error_detail(
-                "Document ingestion is already in progress.",
-                fallback="Document ingestion is already in progress.",
+            session.add(job)
+            document.updated_at = _utcnow()
+            session.add(document)
+            session.commit()
+            session.refresh(job)
+            session.refresh(document)
+            logger.info(
+                "ingestion_requested",
+                extra={
+                    "document_id": document.id,
+                    "job_id": job.id,
+                    "document_status": document.status,
+                },
             )
-        )
-
-    job = IngestionJob(
-        document_id=document_id,
-        status="pending",
-        error_message=None,
-        started_at=None,
-        completed_at=None,
-    )
-    session.add(job)
-    document.updated_at = _utcnow()
-    session.add(document)
-    session.commit()
-    session.refresh(job)
-    session.refresh(document)
-    logger.info(
-        "ingestion_requested",
-        extra={
-            "document_id": document.id,
-            "job_id": job.id,
-            "document_status": document.status,
-        },
-    )
-    return IngestionStartResult(document=document, job=job)
+            if span is not None:
+                span.update(
+                    output={
+                        "document_id": document.id,
+                        "job_id": job.id,
+                        "status": job.status,
+                    }
+                )
+            return IngestionStartResult(document=document, job=job)
+        except Exception as exc:
+            if span is not None:
+                span.update(
+                    level="ERROR",
+                    status_message=safe_error_detail(
+                        exc,
+                        fallback="Failed to start document ingestion.",
+                    ),
+                )
+            raise
 
 
 def ingestion_status_response(

@@ -15,6 +15,7 @@ from app.config import Settings
 from app.db.models import Document
 from app.db.schemas import QueryRequest, QueryResponse
 from app.ingestion.embedder import OllamaNativeError
+from app.observability import preview_text, start_observation
 from app.retrieval.search import search_chunks
 from app.runtime import safe_error_detail
 
@@ -51,71 +52,115 @@ def query_documents(
     request: QueryRequest,
     model_override: Model | None = None,
 ) -> QueryResponse:
-    try:
-        document_ids = _resolve_queryable_document_ids(
-            session=session,
-            requested_document_ids=request.document_ids,
-        )
-    except SQLAlchemyError as exc:
-        detail = safe_error_detail(exc, fallback="Query document lookup failed.")
-        logger.warning("query_failed", extra={"stage": "document_lookup", "detail": detail})
-        raise QueryDependencyError(detail) from exc
-    logger.info(
-        "query_started",
-        extra={
-            "document_count": len(document_ids),
+    with start_observation(
+        settings,
+        name="query.execute",
+        as_type="chain",
+        input={
+            "question": preview_text(request.question),
+            "requested_document_ids": request.document_ids or [],
             "top_k": request.top_k,
-            "question_length": len(request.question),
         },
-    )
+        metadata={"service": "query_service"},
+    ) as span:
+        try:
+            try:
+                document_ids = _resolve_queryable_document_ids(
+                    session=session,
+                    requested_document_ids=request.document_ids,
+                )
+            except SQLAlchemyError as exc:
+                detail = safe_error_detail(exc, fallback="Query document lookup failed.")
+                logger.warning("query_failed", extra={"stage": "document_lookup", "detail": detail})
+                raise QueryDependencyError(detail) from exc
+            logger.info(
+                "query_started",
+                extra={
+                    "document_count": len(document_ids),
+                    "top_k": request.top_k,
+                    "question_length": len(request.question),
+                },
+            )
 
-    try:
-        retrieval_results = search_chunks(
-            session=session,
-            settings=settings,
-            query=request.question,
-            document_ids=document_ids,
-            top_k=request.top_k,
-        )
-    except (OllamaNativeError, SQLAlchemyError) as exc:
-        detail = safe_error_detail(exc, fallback="Query retrieval failed.")
-        logger.warning(
-            "query_failed",
-            extra={"stage": "retrieval", "detail": detail, "document_count": len(document_ids)},
-        )
-        raise QueryDependencyError(detail) from exc
-    if not retrieval_results:
-        logger.info(
-            "query_completed",
-            extra={"document_count": len(document_ids), "result": "no_hits"},
-        )
-        return QueryResponse(
-            answer=NO_RELEVANT_CHUNKS_ANSWER,
-            citations=[],
-            confidence=0.0,
-        )
+            try:
+                retrieval_results = search_chunks(
+                    session=session,
+                    settings=settings,
+                    query=request.question,
+                    document_ids=document_ids,
+                    top_k=request.top_k,
+                )
+            except (OllamaNativeError, SQLAlchemyError) as exc:
+                detail = safe_error_detail(exc, fallback="Query retrieval failed.")
+                logger.warning(
+                    "query_failed",
+                    extra={
+                        "stage": "retrieval",
+                        "detail": detail,
+                        "document_count": len(document_ids),
+                    },
+                )
+                raise QueryDependencyError(detail) from exc
+            if not retrieval_results:
+                logger.info(
+                    "query_completed",
+                    extra={"document_count": len(document_ids), "result": "no_hits"},
+                )
+                response = QueryResponse(
+                    answer=NO_RELEVANT_CHUNKS_ANSWER,
+                    citations=[],
+                    confidence=0.0,
+                )
+                if span is not None:
+                    span.update(
+                        output={
+                            "document_count": len(document_ids),
+                            "retrieval_hit_count": 0,
+                            "citation_count": 0,
+                            "confidence": response.confidence,
+                        }
+                    )
+                return response
 
-    answer = run_query_agent(
-        session=session,
-        settings=settings,
-        question=request.question,
-        document_ids=document_ids,
-        top_k=request.top_k,
-        model_override=model_override,
-    )
-    logger.info(
-        "query_completed",
-        extra={
-            "document_count": len(document_ids),
-            "citation_count": len(answer.citations),
-            "confidence": answer.confidence,
-        },
-    )
-    return QueryResponse(
-        answer=answer.answer,
-        citations=answer.citations,
-        confidence=answer.confidence,
-    )
+            answer = run_query_agent(
+                session=session,
+                settings=settings,
+                question=request.question,
+                document_ids=document_ids,
+                top_k=request.top_k,
+                model_override=model_override,
+            )
+            logger.info(
+                "query_completed",
+                extra={
+                    "document_count": len(document_ids),
+                    "citation_count": len(answer.citations),
+                    "confidence": answer.confidence,
+                },
+            )
+            response = QueryResponse(
+                answer=answer.answer,
+                citations=answer.citations,
+                confidence=answer.confidence,
+            )
+            if span is not None:
+                span.update(
+                    output={
+                        "document_count": len(document_ids),
+                        "retrieval_hit_count": len(retrieval_results),
+                        "citation_count": len(answer.citations),
+                        "confidence": answer.confidence,
+                        "answer_preview": preview_text(answer.answer),
+                    }
+                )
+            return response
+        except Exception as exc:
+            if span is not None:
+                span.update(
+                    level="ERROR",
+                    status_message=safe_error_detail(exc, fallback="Query execution failed."),
+                )
+            raise
 
 
 def run_query_agent(
@@ -127,37 +172,56 @@ def run_query_agent(
     top_k: int,
     model_override: Model | None = None,
 ) -> AnswerResult:
-    agent = build_query_agent(settings, model=model_override)
-    deps = QueryAgentDeps(
-        session=session,
-        settings=settings,
-        document_ids=document_ids,
-        top_k=top_k,
-    )
-    try:
-        result = agent.run_sync(question, deps=deps)
-    except (OllamaNativeError, SQLAlchemyError) as exc:
-        detail = safe_error_detail(exc, fallback="Query agent dependencies failed.")
-        logger.warning("query_failed", extra={"stage": "agent_dependencies", "detail": detail})
-        raise QueryDependencyError(detail) from exc
-    except (ModelHTTPError, ModelAPIError, UnexpectedModelBehavior, AgentRunError) as exc:
-        detail = safe_error_detail(
-            exc,
-            fallback="Query agent failed to produce a valid grounded answer.",
+    with start_observation(
+        settings,
+        name="query.agent",
+        as_type="agent",
+        input={
+            "question": preview_text(question),
+            "document_count": len(document_ids),
+            "top_k": top_k,
+        },
+        metadata={"component": "pydantic_ai"},
+    ) as span:
+        agent = build_query_agent(settings, model=model_override)
+        deps = QueryAgentDeps(
+            session=session,
+            settings=settings,
+            document_ids=document_ids,
+            top_k=top_k,
         )
-        logger.warning("query_failed", extra={"stage": "agent", "detail": detail})
-        raise QueryAgentError(
-            detail
-        ) from exc
-    except Exception as exc:
-        detail = safe_error_detail(exc, fallback="Query agent request failed.")
-        logger.warning("query_failed", extra={"stage": "agent", "detail": detail})
-        raise QueryAgentError(detail) from exc
+        try:
+            result = agent.run_sync(question, deps=deps)
+        except (OllamaNativeError, SQLAlchemyError) as exc:
+            detail = safe_error_detail(exc, fallback="Query agent dependencies failed.")
+            logger.warning("query_failed", extra={"stage": "agent_dependencies", "detail": detail})
+            raise QueryDependencyError(detail) from exc
+        except (ModelHTTPError, ModelAPIError, UnexpectedModelBehavior, AgentRunError) as exc:
+            detail = safe_error_detail(
+                exc,
+                fallback="Query agent failed to produce a valid grounded answer.",
+            )
+            logger.warning("query_failed", extra={"stage": "agent", "detail": detail})
+            raise QueryAgentError(
+                detail
+            ) from exc
+        except Exception as exc:
+            detail = safe_error_detail(exc, fallback="Query agent request failed.")
+            logger.warning("query_failed", extra={"stage": "agent", "detail": detail})
+            raise QueryAgentError(detail) from exc
 
-    output = result.output
-    if not isinstance(output, AnswerResult):
-        raise QueryAgentError("Query agent returned an unexpected output shape.")
-    return output
+        output = result.output
+        if not isinstance(output, AnswerResult):
+            raise QueryAgentError("Query agent returned an unexpected output shape.")
+        if span is not None:
+            span.update(
+                output={
+                    "citation_count": len(output.citations),
+                    "confidence": output.confidence,
+                    "answer_preview": preview_text(output.answer),
+                }
+            )
+        return output
 
 
 def _resolve_queryable_document_ids(

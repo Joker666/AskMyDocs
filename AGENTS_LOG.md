@@ -307,3 +307,61 @@
 ### Next
 
 - Phase 6 is complete; the next major work should start only if you want to move beyond the MVP scope.
+
+## 2026-03-17 12:56
+
+### Completed
+
+- Added Langfuse v4 tracing across FastAPI requests, document upload/ingestion, embedding, retrieval, query orchestration, and Pydantic AI agent/tool execution.
+- Introduced a shared observability module for Langfuse client lifecycle, Pydantic AI OpenTelemetry instrumentation, request attribute propagation, and safe trace payload shaping.
+- Documented Langfuse environment setup and the default trace data policy in the README and `.env.example`.
+
+### Files Changed
+
+- pyproject.toml
+- uv.lock
+- .env.example
+- README.md
+- app/config.py
+- app/main.py
+- app/observability.py
+- app/agent/agent.py
+- app/agent/tools.py
+- app/services/document_service.py
+- app/services/query_service.py
+- app/retrieval/search.py
+- app/ingestion/embedder.py
+- app/ingestion/pipeline.py
+- tests/test_ingestion.py
+- AGENTS_LOG.md
+
+### Notes
+
+- Langfuse tracing is enabled only when credentials are configured; Pydantic AI content capture is intentionally disabled so raw prompts and retrieved document text are not exported by default.
+- `pytest` runs skip Langfuse initialization to avoid noisy exporter failures and test-trace pollution.
+
+### Next
+
+- If you want richer trace detail later, the main decision is whether to selectively allow prompt/tool content for trusted environments or keep the current metadata-only policy.
+
+## 2026-03-17 13:03
+
+### Completed
+
+- Switched Langfuse tracing from metadata-only to content-rich capture.
+- Enabled Pydantic AI content instrumentation so prompts, completions, retrieved chunk text, and tool payload bodies are exported to Langfuse.
+- Removed the Langfuse masking rules that were redacting text-bearing span fields, while still masking raw uploaded bytes.
+
+### Files Changed
+
+- app/observability.py
+- README.md
+- AGENTS_LOG.md
+
+### Notes
+
+- Manual service spans still keep short previews for some top-level query fields, but agent/tool spans now contain the full payloads needed for debugging retrieval and grounding.
+
+### Next
+
+- If you later want to narrow this again, add an explicit config gate around `include_content` and the masking policy.

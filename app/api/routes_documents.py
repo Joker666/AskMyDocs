@@ -100,7 +100,11 @@ def ingest_document_route(
     session: SessionDependency,
 ) -> IngestionStatusResponse:
     try:
-        result = start_document_ingestion(session=session, document_id=document_id)
+        result = start_document_ingestion(
+            session=session,
+            settings=settings,
+            document_id=document_id,
+        )
     except DocumentNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except DocumentIngestionConflictError as exc:

@@ -6,6 +6,7 @@ from collections.abc import Sequence
 import httpx
 
 from app.config import Settings
+from app.observability import start_observation
 from app.runtime import safe_error_detail
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,8 @@ NATIVE_HEALTH_TIMEOUT_SECONDS = 5.0
 
 class OllamaNativeError(Exception):
     """Raised when Ollama native operations fail."""
+
+
 def _matching_model_name(configured_model: str, available_name: str) -> bool:
     configured = configured_model.strip()
     available = available_name.strip()
@@ -94,55 +97,73 @@ def embed_texts(texts: Sequence[str], settings: Settings) -> list[list[float]]:
     if not texts:
         return []
 
-    embeddings: list[list[float]] = []
-    total_batches = (len(texts) + EMBED_BATCH_SIZE - 1) // EMBED_BATCH_SIZE
+    with start_observation(
+        settings,
+        name="ollama.embed",
+        as_type="embedding",
+        input={
+            "text_count": len(texts),
+            "batch_size": EMBED_BATCH_SIZE,
+        },
+        metadata={"model_name": settings.ollama_embed_model},
+    ) as span:
+        embeddings: list[list[float]] = []
+        total_batches = (len(texts) + EMBED_BATCH_SIZE - 1) // EMBED_BATCH_SIZE
 
-    for batch_index, start in enumerate(range(0, len(texts), EMBED_BATCH_SIZE), start=1):
-        batch = list(texts[start : start + EMBED_BATCH_SIZE])
-        body = _request_json(
-            settings=settings,
-            method="POST",
-            path="/api/embed",
-            timeout=EMBED_TIMEOUT_SECONDS,
-            payload={
-                "model": settings.ollama_embed_model,
-                "input": batch,
-            },
-            model_name=settings.ollama_embed_model,
-        )
-        batch_embeddings = body.get("embeddings")
-        if not isinstance(batch_embeddings, list):
-            raise OllamaNativeError("Ollama embed response is missing embeddings.")
-        if len(batch_embeddings) != len(batch):
-            raise OllamaNativeError("Ollama embed response count did not match the request.")
+        for batch_index, start in enumerate(range(0, len(texts), EMBED_BATCH_SIZE), start=1):
+            batch = list(texts[start : start + EMBED_BATCH_SIZE])
+            body = _request_json(
+                settings=settings,
+                method="POST",
+                path="/api/embed",
+                timeout=EMBED_TIMEOUT_SECONDS,
+                payload={
+                    "model": settings.ollama_embed_model,
+                    "input": batch,
+                },
+                model_name=settings.ollama_embed_model,
+            )
+            batch_embeddings = body.get("embeddings")
+            if not isinstance(batch_embeddings, list):
+                raise OllamaNativeError("Ollama embed response is missing embeddings.")
+            if len(batch_embeddings) != len(batch):
+                raise OllamaNativeError("Ollama embed response count did not match the request.")
 
-        validated_batch: list[list[float]] = []
-        for embedding in batch_embeddings:
-            if not isinstance(embedding, list) or not all(
-                isinstance(value, int | float) for value in embedding
-            ):
-                raise OllamaNativeError("Ollama embed response contained an invalid embedding.")
-            vector = [float(value) for value in embedding]
-            if len(vector) != settings.embedding_dimension:
-                raise OllamaNativeError(
-                    "Ollama embedding dimension "
-                    f"{len(vector)} did not match configured dimension "
-                    f"{settings.embedding_dimension}."
-                )
-            validated_batch.append(vector)
+            validated_batch: list[list[float]] = []
+            for embedding in batch_embeddings:
+                if not isinstance(embedding, list) or not all(
+                    isinstance(value, int | float) for value in embedding
+                ):
+                    raise OllamaNativeError("Ollama embed response contained an invalid embedding.")
+                vector = [float(value) for value in embedding]
+                if len(vector) != settings.embedding_dimension:
+                    raise OllamaNativeError(
+                        "Ollama embedding dimension "
+                        f"{len(vector)} did not match configured dimension "
+                        f"{settings.embedding_dimension}."
+                    )
+                validated_batch.append(vector)
 
-        embeddings.extend(validated_batch)
-        logger.info(
-            "embedding_batch_completed",
-            extra={
-                "model_name": settings.ollama_embed_model,
-                "batch_index": batch_index,
-                "total_batches": total_batches,
-                "batch_size": len(batch),
-            },
-        )
+            embeddings.extend(validated_batch)
+            logger.info(
+                "embedding_batch_completed",
+                extra={
+                    "model_name": settings.ollama_embed_model,
+                    "batch_index": batch_index,
+                    "total_batches": total_batches,
+                    "batch_size": len(batch),
+                },
+            )
 
-    return embeddings
+        if span is not None:
+            span.update(
+                output={
+                    "embedding_count": len(embeddings),
+                    "batch_count": total_batches,
+                    "embedding_dimension": settings.embedding_dimension,
+                }
+            )
+        return embeddings
 
 
 def check_ollama_native(settings: Settings) -> None:
