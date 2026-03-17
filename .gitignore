@@ -1,1 +1,15 @@
-__pycache__
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.python-version
+.env
+.coverage
+htmlcov/
+dist/
+build/
+data/uploads/*
+!data/uploads/.gitkeep
+data/parsed/*
+!data/parsed/.gitkeep

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "askmydocs"
+version = "0.1.0"
+description = "Local document Q&A assistant over PDFs."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "docling>=2.30.0",
+  "fastapi>=0.115.0",
+  "httpx>=0.28.0",
+  "pgvector>=0.3.6",
+  "psycopg[binary]>=3.2.0",
+  "pydantic>=2.10.0",
+  "pydantic-ai>=0.0.20",
+  "pydantic-settings>=2.7.0",
+  "sqlalchemy>=2.0.37",
+  "sqlmodel>=0.0.22",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyright>=1.1.390",
+  "pytest>=8.3.0",
+  "ruff>=0.8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "integration: tests that require a live PostgreSQL instance",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["app", "tests", "scripts"]
+typeCheckingMode = "basic"
