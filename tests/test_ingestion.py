@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -14,6 +15,7 @@ from app.config import Settings
 from app.db.models import Document, DocumentChunk, IngestionJob
 from app.db.session import get_engine
 from app.dependencies import get_app_settings, get_db_session
+from app.ingestion.embedder import OllamaNativeError
 from app.ingestion.parser import DocumentParseError, parse_document
 from app.main import app
 
@@ -143,6 +145,19 @@ def ingestable_pdf_bytes() -> bytes:
         " ".join(f"page2-token-{idx:03d}" for idx in range(80)),
     ]
     return build_pdf([page_one, page_two])
+
+
+def _embedding_for_text(text: str, dimension: int) -> list[float]:
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return [digest[index % len(digest)] / 255.0 for index in range(dimension)]
+
+
+@pytest.fixture(autouse=True)
+def stub_pipeline_embeddings(monkeypatch):
+    def fake_embed_texts(texts: list[str], settings: Settings) -> list[list[float]]:
+        return [_embedding_for_text(text, settings.embedding_dimension) for text in texts]
+
+    monkeypatch.setattr("app.ingestion.pipeline.embed_texts", fake_embed_texts)
 
 
 def test_upload_valid_pdf_creates_document(document_test_environment) -> None:
@@ -335,7 +350,12 @@ def test_ingest_document_runs_background_pipeline(document_test_environment) -> 
             select(DocumentChunk).where(DocumentChunk.document_id == document_id)
         ).all()
         assert len(chunks) == body["chunk_count"]
-        assert all(chunk.embedding is None for chunk in chunks)
+        assert all(chunk.embedding is not None for chunk in chunks)
+        assert all(
+            len(chunk.embedding) == settings.embedding_dimension
+            for chunk in chunks
+            if chunk.embedding is not None
+        )
 
 
 def test_reingest_replaces_existing_chunks(document_test_environment) -> None:
@@ -451,3 +471,96 @@ def test_ingest_failure_marks_job_and_document_failed(
             select(DocumentChunk).where(DocumentChunk.document_id == document_id)
         ).all()
         assert chunks == []
+
+
+def test_ingest_embedding_failure_marks_job_and_document_failed(
+    document_test_environment,
+    monkeypatch,
+) -> None:
+    client, _, engine = document_test_environment
+
+    def fake_embed_texts(_texts: list[str], _settings: Settings) -> list[list[float]]:
+        raise OllamaNativeError("embedding model unavailable")
+
+    monkeypatch.setattr("app.ingestion.pipeline.embed_texts", fake_embed_texts)
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("embedding-failure.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    response = client.post(f"/documents/{document_id}/ingest")
+
+    assert response.status_code == 202
+
+    detail = client.get(f"/documents/{document_id}")
+    body = detail.json()
+    assert body["status"] == "failed"
+    assert body["chunk_count"] == 0
+    assert body["latest_ingestion"]["status"] == "failed"
+    assert body["latest_ingestion"]["error_message"] == "embedding model unavailable"
+
+    with Session(engine) as session:
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        ).all()
+        assert chunks == []
+
+
+def test_reingest_embedding_failure_keeps_last_good_index(
+    document_test_environment,
+    monkeypatch,
+) -> None:
+    client, settings, engine = document_test_environment
+
+    upload = client.post(
+        "/documents/upload",
+        files={"file": ("reingest-failure.pdf", ingestable_pdf_bytes(), "application/pdf")},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    first = client.post(f"/documents/{document_id}/ingest")
+    assert first.status_code == 202
+
+    with Session(engine) as session:
+        existing_chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        ).all()
+        assert len(existing_chunks) > 0
+        existing_chunk_count = len(existing_chunks)
+        existing_embeddings = [
+            list(chunk.embedding) if chunk.embedding is not None else None
+            for chunk in existing_chunks
+        ]
+
+    def fake_embed_texts(_texts: list[str], _settings: Settings) -> list[list[float]]:
+        raise OllamaNativeError("embedding service unavailable")
+
+    monkeypatch.setattr("app.ingestion.pipeline.embed_texts", fake_embed_texts)
+
+    second = client.post(f"/documents/{document_id}/ingest")
+
+    assert second.status_code == 202
+
+    detail = client.get(f"/documents/{document_id}")
+    body = detail.json()
+    assert body["status"] == "ready"
+    assert body["chunk_count"] == existing_chunk_count
+    assert body["latest_ingestion"]["status"] == "failed"
+    assert body["latest_ingestion"]["error_message"] == "embedding service unavailable"
+
+    with Session(engine) as session:
+        chunks = session.exec(
+            select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        ).all()
+        assert len(chunks) == existing_chunk_count
+        assert [
+            list(chunk.embedding) if chunk.embedding is not None else None
+            for chunk in chunks
+        ] == existing_embeddings
+        assert all(
+            len(chunk.embedding) == settings.embedding_dimension
+            for chunk in chunks
+            if chunk.embedding is not None
+        )

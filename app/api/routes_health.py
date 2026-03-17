@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.config import Settings
 from app.db.session import check_database_connection
 from app.dependencies import get_app_settings
+from app.ingestion.embedder import check_ollama_native
 
 router = APIRouter(tags=["health"])
 SettingsDependency = Annotated[Settings, Depends(get_app_settings)]
@@ -42,17 +43,27 @@ def healthcheck(
 ) -> HealthResponse:
     app_check = ComponentCheck(status="ok")
     anthropic_compat_check = ComponentCheck(status="not_checked")
-    ollama_native_check = ComponentCheck(status="not_checked")
+    overall_status = "ok"
 
     try:
         check_database_connection(settings)
         db_check = ComponentCheck(status="ok")
-        overall_status = "ok"
-        response.status_code = status.HTTP_200_OK
     except Exception as exc:
         db_check = ComponentCheck(status="error", detail=_sanitize_error_message(exc))
         overall_status = "degraded"
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    try:
+        check_ollama_native(settings)
+        ollama_native_check = ComponentCheck(status="ok")
+    except Exception as exc:
+        ollama_native_check = ComponentCheck(status="error", detail=_sanitize_error_message(exc))
+        overall_status = "degraded"
+
+    response.status_code = (
+        status.HTTP_200_OK
+        if overall_status == "ok"
+        else status.HTTP_503_SERVICE_UNAVAILABLE
+    )
 
     return HealthResponse(
         status=overall_status,

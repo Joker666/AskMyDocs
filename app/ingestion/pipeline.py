@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from sqlmodel import Session, select
 
@@ -10,6 +11,7 @@ from app.config import Settings
 from app.db.models import Document, DocumentChunk, IngestionJob
 from app.db.session import get_engine
 from app.ingestion.chunker import chunk_document
+from app.ingestion.embedder import embed_texts
 from app.ingestion.parser import ParsedDocument, parse_document
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,7 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
     engine = get_engine(settings)
     artifact_path = _artifact_path(settings, document_id)
     artifact_temp_path = artifact_path.with_suffix(".json.tmp")
+    preserve_existing_index = False
 
     try:
         with Session(engine) as session:
@@ -46,6 +49,8 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
             source_path = Path(document.file_path)
             if not source_path.exists():
                 raise IngestionPipelineError("Document source file is missing.")
+
+            preserve_existing_index = _has_queryable_index(session=session, document_id=document_id)
 
             job.status = "running"
             job.started_at = _utcnow()
@@ -68,6 +73,9 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
         chunks = chunk_document(document_id=document_id, parsed_document=parsed_document)
         if not chunks:
             raise IngestionPipelineError("No chunkable text found.")
+        embeddings = embed_texts([chunk.text for chunk in chunks], settings)
+        if len(embeddings) != len(chunks):
+            raise IngestionPipelineError("Embedding count did not match chunk count.")
 
         with Session(engine) as session:
             document, job = _load_document_and_job(
@@ -92,7 +100,7 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
                         text=chunk.text,
                         token_estimate=chunk.token_estimate,
                         metadata_json=chunk.metadata_json,
-                        embedding=None,
+                        embedding=embeddings[chunk.chunk_index],
                     )
                 )
 
@@ -122,6 +130,7 @@ def run_ingestion_job(settings: Settings, document_id: int, job_id: int) -> None
             document_id=document_id,
             job_id=job_id,
             error=exc,
+            preserve_ready_document=preserve_existing_index,
         )
 
 
@@ -143,12 +152,24 @@ def _write_parsed_artifact(path: Path, parsed_document: ParsedDocument) -> None:
     path.write_text(parsed_document.model_dump_json(indent=2), encoding="utf-8")
 
 
+def _has_queryable_index(*, session: Session, document_id: int) -> bool:
+    embedding_column = cast(Any, DocumentChunk.embedding)
+    existing_chunk = session.exec(
+        select(DocumentChunk.id)
+        .where(DocumentChunk.document_id == document_id)
+        .where(embedding_column.is_not(None))
+        .limit(1)
+    ).first()
+    return existing_chunk is not None
+
+
 def _mark_ingestion_failed(
     *,
     settings: Settings,
     document_id: int,
     job_id: int,
     error: Exception,
+    preserve_ready_document: bool = False,
 ) -> None:
     engine = get_engine(settings)
     message = error.args[0] if error.args else str(error)
@@ -159,7 +180,7 @@ def _mark_ingestion_failed(
         job = session.get(IngestionJob, job_id)
 
         if document is not None:
-            document.status = "failed"
+            document.status = "ready" if preserve_ready_document else "failed"
             document.updated_at = _utcnow()
             session.add(document)
 

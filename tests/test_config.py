@@ -24,7 +24,7 @@ def test_settings_require_database_values(monkeypatch) -> None:
 
     with pytest.raises(ValidationError):
         settings_cls = cast(Any, Settings)
-        settings_cls()
+        settings_cls(_env_file=None)
 
 
 def test_settings_build_database_url() -> None:

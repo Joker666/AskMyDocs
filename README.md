@@ -5,6 +5,7 @@ Current backend capabilities:
 - FastAPI app entrypoint at `app.main:app`
 - PostgreSQL + pgvector bootstrap through raw SQL migrations
 - Ollama's Anthropic-compatible API for chat/tool-calling and Ollama native endpoints for embeddings
+- Embedding-backed chunk storage and internal exact cosine retrieval over pgvector
 - `GET /health` with app, DB, Anthropic-compat, and Ollama-native status fields
 - `POST /documents/upload`, `GET /documents`, and `GET /documents/{document_id}`
 
@@ -40,19 +41,26 @@ Current backend capabilities:
    uv run python scripts/migrate.py
    ```
 
-5. Run the API:
+5. Ensure Ollama is running and the embedding model is available:
+
+   ```bash
+   ollama pull embeddinggemma
+   ```
+
+6. Run the API:
 
    ```bash
    uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
 
-6. Check health:
+7. Check health:
 
    ```bash
    curl http://127.0.0.1:8000/health
    ```
 
-Expected response when the database is reachable:
+Expected response when the database is reachable and the configured Ollama embedding model is
+available:
 
 ```json
 {
@@ -61,12 +69,14 @@ Expected response when the database is reachable:
     "app": {"status": "ok", "detail": null},
     "db": {"status": "ok", "detail": null},
     "anthropic_compat": {"status": "not_checked", "detail": null},
-    "ollama_native": {"status": "not_checked", "detail": null}
+    "ollama_native": {"status": "ok", "detail": null}
   }
 }
 ```
 
 `ANTHROPIC_BASE_URL` and `OLLAMA_BASE_URL` both default to `http://localhost:11434` because they target different endpoint families exposed by the same local Ollama server.
+If Ollama is down or `OLLAMA_EMBED_MODEL` is missing, `/health` returns `503` with
+`checks.ollama_native.status = "error"`.
 
 ## Document Uploads
 
@@ -106,13 +116,16 @@ The endpoint returns `202 Accepted` with a pending ingestion job. Poll `GET /doc
 
 - `status` moving through `uploaded` -> `ingesting` -> `ready` or `failed`
 - `latest_ingestion.status` moving through `pending` -> `running` -> `completed` or `failed`
-- `chunk_count` becoming non-zero once chunk storage finishes
+- `chunk_count` becoming non-zero once chunk storage and embedding finish
 
 After a successful ingest, the normalized parsed artifact is written to:
 
 ```text
 PARSED_DIR/<document_id>.json
 ```
+
+Successful ingestion now stores embeddings directly on `document_chunks.embedding`, which powers the
+internal exact cosine retrieval layer used by later phases.
 
 ## Bootstrap Script
 

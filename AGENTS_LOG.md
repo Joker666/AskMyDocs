@@ -156,3 +156,37 @@
 ### Next
 
 - Continue Phase 4 work on embeddings and retrieval, with the ingestion pipeline now stable for repeated runs.
+
+## 2026-03-17 11:20
+
+### Completed
+
+- Implemented the Ollama native embedding client with batch embedding, response validation, and model availability checks.
+- Extended ingestion to generate and persist embeddings, while preserving the last good indexed chunks if a re-ingest embedding step fails.
+- Added exact cosine retrieval helpers over pgvector and wired the native Ollama probe into `/health`.
+- Added deterministic retrieval and embedding-failure tests, plus an optional live Ollama integration probe.
+- Verified `uv run pytest`, `uv run ruff check .`, and `uv run pyright` all pass.
+
+### Files Changed
+
+- README.md
+- app/api/routes_health.py
+- app/db/vector_store.py
+- app/ingestion/embedder.py
+- app/ingestion/pipeline.py
+- app/retrieval/search.py
+- tests/test_config.py
+- tests/test_health.py
+- tests/test_ingestion.py
+- tests/test_retrieval.py
+- AGENTS_LOG.md
+
+### Notes
+
+- `/health` now actively checks Ollama native availability for the configured embedding model, while `anthropic_compat` remains deferred.
+- Retrieval is exact cosine search only in Phase 4; ANN indexing and public query endpoints are still deferred.
+- The live Ollama embedding test skips cleanly when Ollama is not running or the model is unavailable.
+
+### Next
+
+- Start Phase 5 by defining the typed agent output schema and wiring retrieval into the Pydantic AI query flow.
