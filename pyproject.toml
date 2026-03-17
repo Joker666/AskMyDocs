@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27.0"]
+requires = ["hatchling>=1.29.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -9,24 +9,24 @@ description = "Local document Q&A assistant over PDFs."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "docling>=2.30.0",
-  "fastapi>=0.115.0",
-  "httpx>=0.28.0",
-  "pgvector>=0.3.6",
-  "psycopg[binary]>=3.2.0",
-  "pydantic>=2.10.0",
-  "pydantic-ai>=0.0.20",
-  "pydantic-settings>=2.7.0",
-  "sqlalchemy>=2.0.37",
-  "sqlmodel>=0.0.22",
-  "uvicorn[standard]>=0.34.0",
+  "docling>=2.80.0",
+  "fastapi>=0.135.1",
+  "httpx>=0.28.1",
+  "pgvector>=0.4.2",
+  "psycopg[binary]>=3.3.3",
+  "pydantic>=2.12.5",
+  "pydantic-ai>=1.61.0,<1.67.0",
+  "pydantic-settings>=2.13.1",
+  "sqlalchemy>=2.0.48",
+  "sqlmodel>=0.0.37",
+  "uvicorn[standard]>=0.42.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pyright>=1.1.390",
-  "pytest>=8.3.0",
-  "ruff>=0.8.0",
+  "pyright>=1.1.408",
+  "pytest>=9.0.2",
+  "ruff>=0.15.6",
 ]
 
 [tool.hatch.build.targets.wheel]

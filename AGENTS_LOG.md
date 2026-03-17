@@ -89,3 +89,48 @@
 ### Next
 
 - Implement Phase 4 embeddings, vector storage, and retrieval.
+
+## 2026-03-17 03:08
+
+### Completed
+
+- Audited the dependency versions declared in `pyproject.toml` against current PyPI releases.
+- Updated build, runtime, and dev dependency lower bounds to the latest stable versions currently published.
+- Verified that `docling` is currently published on PyPI as `2.78.0`; there was no `2.80.0` release visible on PyPI at the time of the update.
+
+### Files Changed
+
+- pyproject.toml
+- AGENTS_LOG.md
+
+### Notes
+
+- The dependency spec style remains lower-bounded (`>=...`) rather than exact pins, matching the existing project convention.
+- This change updates declared minimums only; it does not install or lock packages in the workspace.
+
+### Next
+
+- Refresh the environment or lockfile if you want the local installation to match these newer minimums immediately.
+
+## 2026-03-17 03:15
+
+### Completed
+
+- Corrected the dependency set to a resolvable combination by updating `docling` to `>=2.80.0` and constraining `pydantic-ai` to `>=1.61.0,<1.67.0`.
+- Refreshed `uv.lock` and synced the local development environment to the updated dependency declarations.
+- Verified `python -m compileall app tests scripts`, `uv run --locked ruff check .`, and `uv run --locked pyright` all pass.
+
+### Files Changed
+
+- pyproject.toml
+- uv.lock
+- AGENTS_LOG.md
+
+### Notes
+
+- The earlier `pydantic-ai>=1.67.0` bump conflicted with `docling` through incompatible `huggingface-hub` requirements.
+- The lock refresh also corrected the earlier assumption that `docling 2.80.0` was unavailable; it resolved successfully during this validation pass.
+
+### Next
+
+- Continue Phase 4 work against the refreshed lockfile and dependency bounds.
