@@ -32,3 +32,23 @@ def test_settings_build_database_url() -> None:
 
     assert settings.database_url == "postgresql+psycopg://postgres:postgres@localhost:5432/askmydocs"
     assert settings.embedding_dimension == 768
+
+
+def test_logfire_requires_token_to_export() -> None:
+    settings = make_settings()
+
+    assert settings.logfire_is_configured is False
+    assert settings.logfire_runtime_environment == "development"
+
+    settings_cls = cast(Any, Settings)
+    configured = settings_cls(
+        POSTGRES_HOST="localhost",
+        POSTGRES_DB="askmydocs",
+        POSTGRES_USER="postgres",
+        POSTGRES_PASSWORD=SecretStr("postgres"),
+        LOGFIRE_TOKEN=SecretStr("lf-write-token"),
+        LOGFIRE_ENVIRONMENT="staging",
+    )
+
+    assert configured.logfire_is_configured is True
+    assert configured.logfire_runtime_environment == "staging"

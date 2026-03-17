@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     upload_dir: str = Field(default="./data/uploads", alias="UPLOAD_DIR")
     parsed_dir: str = Field(default="./data/parsed", alias="PARSED_DIR")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    logfire_token: SecretStr | None = Field(default=None, alias="LOGFIRE_TOKEN")
+    logfire_send_to_logfire: bool = Field(default=True, alias="LOGFIRE_SEND_TO_LOGFIRE")
+    logfire_service_name: str = Field(default="askmydocs", alias="LOGFIRE_SERVICE_NAME")
+    logfire_service_version: str | None = Field(default=None, alias="LOGFIRE_SERVICE_VERSION")
+    logfire_environment: str | None = Field(default=None, alias="LOGFIRE_ENVIRONMENT")
 
     langfuse_public_key: SecretStr | None = Field(default=None, alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: SecretStr | None = Field(default=None, alias="LANGFUSE_SECRET_KEY")
@@ -88,6 +93,14 @@ class Settings(BaseSettings):
             and self.langfuse_public_key is not None
             and self.langfuse_secret_key is not None
         )
+
+    @property
+    def logfire_is_configured(self) -> bool:
+        return self.logfire_send_to_logfire and self.logfire_token is not None
+
+    @property
+    def logfire_runtime_environment(self) -> str:
+        return self.logfire_environment or self.app_env
 
 
 @lru_cache(maxsize=1)

@@ -389,3 +389,31 @@
 ### Next
 
 - The next retrieval improvement should be higher internal recall before answer generation, then reranking over the larger candidate set.
+
+## 2026-03-17 14:01
+
+### Completed
+
+- Integrated Logfire log shipping into the existing stdlib logging bootstrap using the official `LogfireLoggingHandler`.
+- Added typed Logfire settings so export is controlled explicitly by `LOGFIRE_TOKEN` and related env vars.
+- Documented the new Logfire configuration and added focused config/logging tests.
+
+### Files Changed
+
+- app/config.py
+- app/logging.py
+- app/main.py
+- .env.example
+- README.md
+- tests/test_config.py
+- tests/test_logging.py
+- AGENTS_LOG.md
+
+### Notes
+
+- Console logging still uses the existing key/value formatter on stdout.
+- Logfire export is only enabled when `LOGFIRE_TOKEN` is set, which avoids accidental use of local Logfire credentials during tests or unconfigured runs.
+
+### Next
+
+- Set `LOGFIRE_TOKEN` in the runtime environment and verify new app logs appear in the target Logfire project dashboard.

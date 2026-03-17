@@ -96,6 +96,27 @@ Optional headers:
 
 Test runs do not initialize Langfuse, which keeps `pytest` quiet and avoids exporting local test traffic.
 
+## Logfire Logging
+
+AskMyDocs also forwards standard-library `logging` output to Logfire using the official [`LogfireLoggingHandler`](https://logfire.pydantic.dev/docs/integrations/logging/).
+
+Set these environment variables to enable log shipping:
+
+```env
+LOGFIRE_TOKEN=
+LOGFIRE_SEND_TO_LOGFIRE=true
+LOGFIRE_SERVICE_NAME=askmydocs
+LOGFIRE_SERVICE_VERSION=
+LOGFIRE_ENVIRONMENT=development
+```
+
+Behavior notes:
+
+- Existing stdout logs stay enabled with the current key/value formatter.
+- Logfire export is only enabled when `LOGFIRE_TOKEN` is set.
+- `LOGFIRE_ENVIRONMENT` falls back to `APP_ENV` when omitted.
+- The app disables Logfire's own console output so local logs are not duplicated.
+
 ## Run The API
 
 Start the server:

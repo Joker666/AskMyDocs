@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 
 from app.api import api_router
 from app.config import Settings, get_settings
-from app.logging import configure_logging
+from app.logging import configure_logging, shutdown_logging
 from app.observability import (
     get_langfuse_client,
     initialize_observability,
@@ -27,13 +27,14 @@ def ensure_runtime_dirs(settings: Settings) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings)
     ensure_runtime_dirs(settings)
     initialize_observability(settings)
     try:
         yield
     finally:
         shutdown_observability(settings)
+        shutdown_logging(settings)
 
 
 def create_app() -> FastAPI:

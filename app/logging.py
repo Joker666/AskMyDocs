@@ -4,6 +4,11 @@ import logging
 import sys
 from datetime import UTC, datetime
 
+import logfire
+from logfire import LogfireLoggingHandler
+
+from app.config import Settings
+
 _STANDARD_RECORD_FIELDS = {
     "args",
     "asctime",
@@ -61,10 +66,36 @@ def _quote(value: object) -> str:
     return f'"{escaped}"'
 
 
-def configure_logging(level: str) -> None:
+def configure_logging(settings: Settings) -> None:
+    level_name = settings.log_level.upper()
+    level = getattr(logging, level_name, logging.INFO)
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
+    root_logger.setLevel(level)
+
     handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(level)
     handler.setFormatter(KeyValueFormatter())
     root_logger.addHandler(handler)
-    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+    if settings.logfire_is_configured:
+        logfire.configure(
+            send_to_logfire=True,
+            token=settings.logfire_token.get_secret_value() if settings.logfire_token else None,
+            service_name=settings.logfire_service_name,
+            service_version=settings.logfire_service_version,
+            environment=settings.logfire_runtime_environment,
+            console=False,
+            min_level=level,
+        )
+        root_logger.addHandler(
+            LogfireLoggingHandler(
+                level=level,
+                fallback=logging.NullHandler(),
+            )
+        )
+
+
+def shutdown_logging(settings: Settings) -> None:
+    if settings.logfire_is_configured:
+        logfire.shutdown()
