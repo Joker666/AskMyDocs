@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "docling>=2.80.0",
+  "exa_py>=1.9.0",
   "fastapi>=0.135.1",
   "httpx>=0.28.1",
   "langfuse>=4.0.0",

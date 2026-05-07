@@ -117,3 +117,99 @@
 ### Next
 
 - Monitor whether validation failures persist with these combined changes.
+
+## 2026-03-17 19:20
+
+### Completed
+
+- Added Exa API hybrid search support (Phases 1+2).
+- Phase 1: Exa config fields in `config.py`, env vars in `.env.example`, `exa_py` dependency, `app/retrieval/exa_search.py` client wrapper with observability, Exa health check in `routes_health.py`.
+- Phase 2: `app/retrieval/fusion.py` with weighted Reciprocal Rank Fusion (RRF), `hybrid_search()` orchestrator in `search.py` that transparently fuses pgvector + Exa results.
+
+### Files Changed
+
+- app/config.py
+- app/retrieval/exa_search.py (new)
+- app/retrieval/fusion.py (new)
+- app/retrieval/search.py
+- app/api/routes_health.py
+- .env.example
+- pyproject.toml
+- tests/test_exa_search.py (new)
+- tests/test_fusion.py (new)
+- tests/test_health.py
+
+### Notes
+
+- Exa is disabled by default (`EXA_ENABLED=false`). When disabled, `hybrid_search()` returns wrapped local-only results.
+- Exa failures are handled gracefully — if the API is unreachable, the system falls back to local results silently.
+- Circular import between `fusion.py` and `search.py` resolved with `TYPE_CHECKING` guard.
+
+### Next
+
+- Phase 3: Wire `hybrid_search()` into agent tools, add `WebCitation` model and `web_citations` response field.
+- Phase 4: Observability spans, cost tracking, documentation.
+
+## 2026-03-17 19:44
+
+### Completed
+
+- Phase 3: Wired hybrid search into the agent tools (transparent fusion).
+- Added `WebCitation` model and `web_citations` field to `AnswerResult` and `QueryResponse` (backward compatible, defaults to empty list).
+- Updated `search_chunks` tool to call `hybrid_search()` and map `FusedResult` into `SearchChunkResult` with `source`/`url`/`title` fields.
+- Updated system prompt with web result handling rules.
+- Updated `query_service.py` to pass `web_citations` through to the API response.
+
+### Files Changed
+
+- app/agent/models.py
+- app/agent/tools.py
+- app/agent/prompts.py
+- app/db/schemas.py
+- app/services/query_service.py
+- tests/test_query.py
+
+### Notes
+
+- The `Citation` model is unchanged; web citations live in a separate `web_citations` field.
+- The agent is instructed to prefer document citations and use web results only as supplementary context.
+
+### Next
+
+- Phase 4: Observability spans for Exa calls, cost tracking, documentation.
+
+## 2026-03-18 13:58
+
+### Completed
+
+- Phase 4: Added observability, cost tracking, and documentation for hybrid search.
+- `hybrid_search()` now emits a Langfuse `retrieval.hybrid_search` span with mode, result counts, and Exa cost estimate.
+- Added `_estimate_exa_cost()` based on Exa pricing: ~$0.017 per query with 5 results.
+- Structured logs for every fusion path: `local_only`, `local_only_exa_failed`, `local_only_exa_empty`, `fused`.
+- Updated README with Hybrid Search (Exa) section: how it works, configuration, cost, and updated response shape.
+
+### Files Changed
+
+- app/retrieval/search.py
+- README.md
+- AGENTS_LOG.md
+
+### Notes
+
+- All four hybrid search phases are now complete.
+- Exa remains disabled by default; no breaking changes to existing behavior.
+
+## 2026-05-07 02:02
+
+### Completed
+
+- Added `_validate_web_citation` to output validator: checks URL exists in `deps.web_results`, enforces quote length limit.
+- Changed `exa_search_type` from `str` to `Literal["auto", "neural", "keyword"]` in config to catch invalid values at startup.
+- Updated confidence check to consider `web_citations` as valid citations (not just `citations`).
+- Documented the pre-flight retrieval design decision (local-only, not hybrid) in README.
+
+### Files Changed
+
+- app/agent/agent.py
+- app/config.py
+- README.md

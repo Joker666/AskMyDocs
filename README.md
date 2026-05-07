@@ -8,6 +8,7 @@ AskMyDocs is a local PDF Q&A backend built with FastAPI, Docling, PostgreSQL + p
 - Parse and normalize document structure with Docling.
 - Chunk and embed document text into PostgreSQL + pgvector.
 - Query ready documents through a Pydantic AI agent using tool calls.
+- Optionally augment retrieval with Exa web search (hybrid search).
 - Return typed answers with citation objects tied to real stored chunks.
 - Report app, database, chat-model, and embedding-model health through `/health`.
 
@@ -124,6 +125,68 @@ Behavior notes:
 - Langfuse tracing remains enabled independently; both systems run side by side when configured.
 - Pytest runs do not initialize Logfire exports, which avoids sending local test traffic to the dashboard.
 
+## Hybrid Search (Exa)
+
+AskMyDocs can optionally augment local pgvector retrieval with [Exa](https://exa.ai) web search. When enabled, each query runs both a local embedding search and an Exa API search, then merges results using Reciprocal Rank Fusion (RRF).
+
+### How it works
+
+1. pgvector cosine search runs against local document chunks (always).
+2. Exa API search runs in parallel (when enabled).
+3. Results are fused with weighted RRF — local results are favored by default.
+4. The agent sees both local chunk references and web results with `source` markers.
+5. Document citations go into `citations`; web citations go into `web_citations`.
+
+### Configuration
+
+Set these environment variables to enable hybrid search:
+
+```env
+EXA_API_KEY=your-exa-api-key
+EXA_ENABLED=true
+EXA_SEARCH_TYPE=auto       # "auto" | "neural" | "keyword"
+EXA_NUM_RESULTS=5
+EXA_WEIGHT=0.5             # RRF weight for Exa results (0.0-1.0)
+```
+
+Notes:
+
+- Exa is **disabled by default** (`EXA_ENABLED=false`). The system works identically to before without it.
+- `EXA_WEIGHT=0.5` means local results are weighted 2× relative to Exa results.
+- If Exa is unreachable, the system falls back silently to local-only results.
+- Cost estimate per query with 5 Exa results: ~$0.017 USD.
+
+### Updated query response
+
+When Exa is enabled, the `/query` response may include a `web_citations` field:
+
+```json
+{
+  "answer": "...",
+  "citations": [
+    {"document_id": 1, "chunk_id": 14, "filename": "paper.pdf", "quote": "..."}
+  ],
+  "web_citations": [
+    {"url": "https://example.com/article", "title": "Relevant Article", "quote": "..."}
+  ],
+  "confidence": 0.83
+}
+```
+
+`web_citations` defaults to an empty list when Exa is disabled or no web results are relevant.
+
+### Design note: pre-flight retrieval is local only
+
+The `/query` endpoint runs a pre-flight retrieval check using local pgvector search before starting the agent. If this local pre-flight returns no hits, the query short-circuits with a "no relevant information" response and the agent never runs — meaning Exa is never called.
+
+This is intentional:
+
+- The pre-flight acts as a gate on whether the uploaded documents contain any relevant content. If local documents have nothing, adding web context would violate the document-grounded design.
+- Exa results cannot be pre-seeded into agent deps the same way local chunk context can, because web citations don't go through `fetch_chunk_context`.
+- Keeping the pre-flight local-only avoids unnecessary Exa API calls (and cost) when the user's documents clearly don't cover the topic.
+
+Hybrid search (pgvector + Exa) runs inside the agent's `search_chunks` tool call, which only executes after the pre-flight confirms local hits exist.
+
 ## Run The API
 
 Start the server:
@@ -223,28 +286,35 @@ Behavior notes:
 The `/query` path has a deliberate two-stage retrieval flow:
 
 1. The service resolves the allowed ready documents.
-2. It runs a retrieval preflight.
-3. If retrieval returns no hits, the API skips the LLM and returns the fixed no-hit response.
+2. It runs a local-only retrieval preflight (pgvector cosine search).
+3. If retrieval returns no local hits, the API skips the LLM and returns the fixed no-hit response.
 4. If retrieval finds hits, the Pydantic AI agent runs and the model may call tools such as `search_chunks` and `fetch_chunk_context`.
-5. Final citations are validated against fetched chunk context before the answer is returned.
+5. Inside `search_chunks`, hybrid search runs pgvector + optional Exa API search with RRF fusion.
+6. Final document citations are validated against fetched chunk context, and web citations are validated against retrieved Exa URLs.
 
 ```mermaid
 flowchart TD
     A["POST /query"] --> B["Resolve queryable document IDs"]
-    B --> C["Preflight vector retrieval"]
-    C --> D{"Any hits?"}
+    B --> C["Preflight vector retrieval (local only)"]
+    C --> D{"Any local hits?"}
     D -- "No" --> E["Return 200 with empty citations and confidence 0.0"]
     D -- "Yes" --> F["Run Pydantic AI agent"]
     F --> G["Model chooses whether to call registered tools"]
     G --> H["search_chunks(query, document_ids, top_k)"]
-    H --> I["Top semantic hits"]
-    I --> J["fetch_chunk_context(chunk_ids)"]
+    H --> H1["pgvector cosine search"]
+    H --> H2{"Exa enabled?"}
+    H2 -- "Yes" --> H3["Exa API search"]
+    H3 --> H4["RRF fusion (local + web)"]
+    H1 --> H4
+    H2 -- "No" --> H1
+    H4 --> I["Fused results (document + web hits)"]
+    I --> J["fetch_chunk_context(chunk_ids) — document chunks only"]
     J --> K["build_chunk_context(): expand each hit to a same-document +/-1 chunk window"]
     K --> L["Model drafts AnswerResult"]
     L --> M{"Output validator passes?"}
     M -- "No" --> N["ModelRetry: force another grounded attempt"]
     N --> G
-    M -- "Yes" --> O["Return answer + validated citations"]
+    M -- "Yes" --> O["Return answer + validated citations + web_citations"]
 ```
 
 Notes:

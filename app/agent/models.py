@@ -12,7 +12,14 @@ class Citation(BaseModel):
     quote: str = Field(min_length=1)
 
 
+class WebCitation(BaseModel):
+    url: str
+    title: str
+    quote: str = Field(min_length=1)
+
+
 class AnswerResult(BaseModel):
     answer: str = Field(min_length=1)
     citations: list[Citation]
+    web_citations: list[WebCitation] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)

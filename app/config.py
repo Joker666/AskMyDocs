@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -41,6 +41,14 @@ class Settings(BaseSettings):
         default=DEFAULT_EMBEDDING_DIMENSION,
         alias="EMBEDDING_DIMENSION",
     )
+
+    exa_api_key: SecretStr | None = Field(default=None, alias="EXA_API_KEY")
+    exa_enabled: bool = Field(default=False, alias="EXA_ENABLED")
+    exa_search_type: Literal["auto", "neural", "keyword"] = Field(
+        default="auto", alias="EXA_SEARCH_TYPE"
+    )
+    exa_num_results: int = Field(default=5, alias="EXA_NUM_RESULTS")
+    exa_weight: float = Field(default=0.5, alias="EXA_WEIGHT")
 
     upload_dir: str = Field(default="./data/uploads", alias="UPLOAD_DIR")
     parsed_dir: str = Field(default="./data/parsed", alias="PARSED_DIR")
@@ -93,6 +101,10 @@ class Settings(BaseSettings):
             and self.langfuse_public_key is not None
             and self.langfuse_secret_key is not None
         )
+
+    @property
+    def exa_is_configured(self) -> bool:
+        return self.exa_enabled and self.exa_api_key is not None
 
     @property
     def logfire_is_configured(self) -> bool:

@@ -10,7 +10,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.tools import RunContext
 
-from app.agent.models import AnswerResult, Citation
+from app.agent.models import AnswerResult, Citation, WebCitation
 from app.agent.prompts import QUERY_SYSTEM_PROMPT
 from app.agent.tools import ChunkContextResult, QueryAgentDeps, register_query_tools
 from app.config import Settings
@@ -71,22 +71,24 @@ def build_query_agent(
 
 
 def validate_answer_result(deps: QueryAgentDeps, data: AnswerResult) -> AnswerResult:
-    if not data.citations and data.confidence > 0.0:
+    has_any_citation = bool(data.citations) or bool(data.web_citations)
+    if not has_any_citation and data.confidence > 0.0:
         raise ModelRetry(
             "Non-zero confidence requires at least one citation. "
             "Set confidence to 0.0 if no relevant information was found."
         )
 
-    if not data.citations:
-        return data
+    if data.citations:
+        fetched_chunks = deps.fetched_chunks_by_id
+        if not fetched_chunks:
+            raise ModelRetry("Fetch chunk context before returning the final answer.")
 
-    fetched_chunks = deps.fetched_chunks_by_id
-    if not fetched_chunks:
-        raise ModelRetry("Fetch chunk context before returning the final answer.")
+        for citation in data.citations:
+            _backfill_citation_metadata(fetched_chunks, citation)
+            _validate_citation(fetched_chunks, citation)
 
-    for citation in data.citations:
-        _backfill_citation_metadata(fetched_chunks, citation)
-        _validate_citation(fetched_chunks, citation)
+    for web_citation in data.web_citations:
+        _validate_web_citation(deps, web_citation)
 
     return data
 
@@ -137,6 +139,31 @@ def _validate_citation(
             f"Copy the quote verbatim from the chunk text."
         )
 
+
+def _validate_web_citation(
+    deps: QueryAgentDeps,
+    web_citation: WebCitation,
+) -> None:
+    """Validate that a web citation references a real Exa result from the search."""
+    quote = web_citation.quote.strip()
+    if len(quote) > MAX_CITATION_QUOTE_LENGTH:
+        raise ModelRetry(
+            f"Web citation quote is too long for {web_citation.url}. "
+            f"Keep quotes under {MAX_CITATION_QUOTE_LENGTH} characters."
+        )
+
+    known_urls = {result.url for result in deps.web_results if result.url}
+    if not known_urls:
+        raise ModelRetry(
+            f"Web citation references {web_citation.url} but no web results were retrieved. "
+            "Only cite URLs returned by search_chunks."
+        )
+
+    if web_citation.url not in known_urls:
+        raise ModelRetry(
+            f"Web citation URL {web_citation.url} was not in the search results. "
+            "Only cite URLs returned by search_chunks."
+        )
 
 def check_anthropic_compat(settings: Settings) -> None:
     client = Anthropic(

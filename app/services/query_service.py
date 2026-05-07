@@ -109,6 +109,7 @@ def query_documents(
                 response = QueryResponse(
                     answer=NO_RELEVANT_CHUNKS_ANSWER,
                     citations=[],
+                    web_citations=[],
                     confidence=0.0,
                 )
                 if span is not None:
@@ -142,6 +143,7 @@ def query_documents(
             response = QueryResponse(
                 answer=answer.answer,
                 citations=answer.citations,
+                web_citations=answer.web_citations,
                 confidence=answer.confidence,
             )
             if span is not None:

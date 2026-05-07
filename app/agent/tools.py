@@ -12,8 +12,9 @@ from app.config import Settings
 from app.db.models import Document, DocumentChunk
 from app.observability import get_langfuse_client
 from app.retrieval.context_builder import build_chunk_context
+from app.retrieval.fusion import FusedResult
 from app.retrieval.search import SearchResult
-from app.retrieval.search import search_chunks as run_search_chunks
+from app.retrieval.search import hybrid_search as run_hybrid_search
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class QueryAgentDeps:
     top_k: int
     search_results_by_id: dict[int, SearchResult] = field(default_factory=dict)
     fetched_chunks_by_id: dict[int, ChunkContextResult] = field(default_factory=dict)
+    web_results: list[FusedResult] = field(default_factory=list)
 
 
 class ListedDocument(BaseModel):
@@ -36,13 +38,16 @@ class ListedDocument(BaseModel):
 
 
 class SearchChunkResult(BaseModel):
-    chunk_id: int
-    document_id: int
-    filename: str
-    page_number: int | None
-    section_title: str | None
+    chunk_id: int | None = None
+    document_id: int | None = None
+    filename: str | None = None
+    page_number: int | None = None
+    section_title: str | None = None
     text_excerpt: str
     similarity_score: float
+    source: str = "document"
+    url: str | None = None
+    title: str | None = None
 
 
 class ChunkContextResult(BaseModel):
@@ -112,6 +117,7 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
         if not scoped_document_ids:
             ctx.deps.search_results_by_id = {}
             ctx.deps.fetched_chunks_by_id = {}
+            ctx.deps.web_results = []
             if client is not None:
                 client.update_current_span(output={"result_count": 0})
             return []
@@ -126,32 +132,63 @@ def register_query_tools(agent: Agent[QueryAgentDeps, AnswerResult]) -> None:
                 "query_length": len(query),
             },
         )
-        results = run_search_chunks(
+        fused_results = run_hybrid_search(
             session=ctx.deps.session,
             settings=ctx.deps.settings,
             query=query,
             document_ids=scoped_document_ids,
             top_k=effective_top_k,
         )
-        ctx.deps.search_results_by_id = {result.chunk_id: result for result in results}
+
+        local_search_results: dict[int, SearchResult] = {}
+        web_results: list[FusedResult] = []
+        output: list[SearchChunkResult] = []
+
+        for fused in fused_results:
+            if fused.source == "local" and fused.chunk_id is not None:
+                local_search_results[fused.chunk_id] = SearchResult(
+                    chunk_id=fused.chunk_id,
+                    document_id=fused.document_id or 0,
+                    filename=fused.filename or "",
+                    page_number=fused.page_number,
+                    section_title=fused.section_title,
+                    text=fused.text,
+                    similarity_score=fused.similarity_score,
+                )
+                output.append(
+                    SearchChunkResult(
+                        chunk_id=fused.chunk_id,
+                        document_id=fused.document_id,
+                        filename=fused.filename,
+                        page_number=fused.page_number,
+                        section_title=fused.section_title,
+                        text_excerpt=fused.text,
+                        similarity_score=fused.rrf_score,
+                        source="document",
+                    )
+                )
+            elif fused.source == "exa":
+                web_results.append(fused)
+                output.append(
+                    SearchChunkResult(
+                        text_excerpt=fused.text[:500] if fused.text else "",
+                        similarity_score=fused.rrf_score,
+                        source="web",
+                        url=fused.url,
+                        title=fused.title,
+                    )
+                )
+
+        ctx.deps.search_results_by_id = local_search_results
         ctx.deps.fetched_chunks_by_id = {}
-        output = [
-            SearchChunkResult(
-                chunk_id=result.chunk_id,
-                document_id=result.document_id,
-                filename=result.filename,
-                page_number=result.page_number,
-                section_title=result.section_title,
-                text_excerpt=result.text,
-                similarity_score=result.similarity_score,
-            )
-            for result in results
-        ]
+        ctx.deps.web_results = web_results
+
         if client is not None:
             client.update_current_span(
                 output={
                     "result_count": len(output),
-                    "chunk_ids": [result.chunk_id for result in output],
+                    "local_count": len(local_search_results),
+                    "web_count": len(web_results),
                 }
             )
         return output

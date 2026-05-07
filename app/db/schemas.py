@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.models import Citation
+from app.agent.models import Citation, WebCitation
 
 
 class DocumentSummary(BaseModel):
@@ -58,4 +58,5 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     citations: list[Citation]
+    web_citations: list[WebCitation] = Field(default_factory=list)
     confidence: float

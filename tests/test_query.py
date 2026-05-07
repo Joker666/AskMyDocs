@@ -241,6 +241,7 @@ def test_query_route_returns_expected_shape(query_test_environment, monkeypatch)
                 "quote": "the answer must stay grounded",
             }
         ],
+        "web_citations": [],
         "confidence": 0.82,
     }
 
@@ -357,6 +358,7 @@ def test_query_no_hit_path_skips_model(query_test_environment, monkeypatch) -> N
     assert response.json() == {
         "answer": "I couldn't find relevant information in the indexed documents.",
         "citations": [],
+        "web_citations": [],
         "confidence": 0.0,
     }
 

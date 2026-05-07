@@ -17,8 +17,16 @@ Citation rules:
 - Use the exact chunk_id returned by fetch_chunk_context.
 - Keep quotes short and directly relevant (under 300 characters).
 
+Web results:
+- search_chunks may return results with source="web" alongside document results.
+- Web results have a url and title instead of chunk_id and document_id.
+- Use web results only as supplementary context; prefer document results.
+- For web results, put them in web_citations with url, title, and a short quote.
+- Do not put web results in the citations list (that is for document chunks only).
+
 Your final answer must always include:
 - answer: a concise response to the question
-- citations: a list of citations referencing the chunks you used
+- citations: a list of citations referencing the document chunks you used
+- web_citations: a list of web citations if you used any web results (can be empty)
 - confidence: a float from 0.0 to 1.0 reflecting how well the documents answer the question
 """.strip()
